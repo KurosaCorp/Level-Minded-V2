@@ -140,12 +140,7 @@ NodeId AssetPanel::Draw(SceneTree& tree, NodeId targetGroup, float dpiScale)
     FormatGroupPath(tree, targetGroup, path);
     ImGui::TextWrapped("%s", path);
     ImGui::SetNextItemWidth(-FLT_MIN);
-    m_filter.Draw("##filter");
-    if (!m_filter.IsActive()) { // placeholder text
-        const ImVec2 min = ImGui::GetItemRectMin();
-        ImGui::GetWindowDrawList()->AddText(ImVec2(min.x + ImGui::GetStyle().FramePadding.x, min.y + ImGui::GetStyle().FramePadding.y),
-                                            ImGui::GetColorU32(ImGuiCol_TextDisabled), "Search...");
-    }
+    m_filter.DrawWithHint("##filter", "Search...");
     ImGui::Separator();
 
     if (ImGui::BeginChild("##tiles")) {
