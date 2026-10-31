@@ -13,6 +13,7 @@
 #include "scene/SceneTree.h"
 
 #include <array>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,7 @@ struct AppOptions {
     uint32_t benchFrames = 0;              // --bench N: run the benchmark script (N frames per phase), then exit
     std::wstring benchOutput = L"bench.txt"; // --bench-out PATH
     std::vector<std::wstring> importFiles; // --import PATH (repeatable): import models at startup
+    std::wstring mapFile;                   // --map PATH: load this map at startup
 };
 
 // Owns the window, GPU device and UI, and runs the event-driven main loop.
@@ -69,6 +71,21 @@ private:
     void ImportPendingFiles();
     bool ImportFile(const std::wstring& path, std::string& message); // true on success
     void ShowImportDialog(); // modal open-file dialog; queues the chosen files
+
+    // ---- Map files (File menu). All of these may open modal dialogs: call them between frames.
+    enum class FileAction { None, Load, Save, SaveAs };
+    void RunFileAction(FileAction action);
+    bool SaveMapAs();                                    // false if cancelled or failed
+    bool SaveMapTo(const std::filesystem::path& path);   // false on failure (reported)
+    bool LoadMapFrom(const std::filesystem::path& path); // false on failure (reported; scene unchanged)
+    // Asks whether to save unsaved changes first. False if the user cancelled (or saving failed).
+    bool ConfirmDiscardChanges(const wchar_t* action);
+    bool HasUnsavedChanges() const;
+    void MarkSaved();
+    void UpdateWindowTitle();
+    void SetFileStatus(std::string text, bool isError);
+    // Call after every modal OS dialog (file dialogs, message boxes): resets ImGui's key/mouse state.
+    void AfterModalDialog();
     void MarkActive();
     DWORD IdleWaitTimeoutMs() const;
 
@@ -77,6 +94,7 @@ private:
     void OnWindowDpiChanged(float dpiScale) override;
     void OnWindowLiveResize() override;
     void OnFilesDropped(std::span<const std::wstring> paths) override;
+    bool OnWindowCloseRequested() override;
 
     Window m_window;
     GpuDevice m_gpu;
@@ -89,6 +107,17 @@ private:
     AssetPanel m_assets;
     std::vector<std::wstring> m_pendingImports;
     bool m_openImportDialog = false; // opened after the frame is presented (the dialog is modal)
+
+    // Current map file (empty = untitled) and what was last saved or loaded, for "unsaved changes".
+    std::filesystem::path m_mapPath;
+    uint64_t m_savedContentVersion = 0;
+    uint64_t m_savedImportVersion = 0;
+    FileAction m_pendingFileAction = FileAction::None;
+    std::string m_fileStatus; // shown at the right end of the menu bar
+    bool m_fileStatusIsError = false;
+    bool m_titleShowsUnsaved = false;
+    std::filesystem::path m_titlePath;
+    bool m_titleValid = false;
     DebugOverlay m_overlay;
     FrameStats m_stats;
 

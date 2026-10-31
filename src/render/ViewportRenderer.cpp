@@ -145,6 +145,11 @@ bool ViewportRenderer::SyncMeshes(ID3D11DeviceContext* context)
 {
     if (m_meshes->Version() == m_meshVersion)
         return true;
+    if (m_meshes->Generation() != m_meshGeneration) { // library rebuilt (map loaded): upload it all again
+        m_uploadedVertices = 0;
+        m_uploadedIndices = 0;
+        m_meshGeneration = m_meshes->Generation();
+    }
     const std::span<const MeshVertex> vertices = m_meshes->Vertices();
     const std::span<const uint32_t> indices = m_meshes->Indices();
 

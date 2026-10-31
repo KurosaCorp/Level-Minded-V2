@@ -460,6 +460,20 @@ std::string LowerExtension(const std::filesystem::path& path)
 
 } // namespace
 
+std::string WithThousandsSeparators(size_t value)
+{
+    std::string digits = std::to_string(value);
+    for (int i = static_cast<int>(digits.size()) - 3; i > 0; i -= 3)
+        digits.insert(static_cast<size_t>(i), 1, ',');
+    return digits;
+}
+
+std::string DescribeImportedModel(const ImportedModel& model, const std::string& fileName)
+{
+    return std::string(model.format) + " model, " + WithThousandsSeparators(model.indices.size() / 3) + " triangles (" +
+           fileName + ")";
+}
+
 bool IsImportableModel(const std::filesystem::path& path)
 {
     const std::string extension = LowerExtension(path);

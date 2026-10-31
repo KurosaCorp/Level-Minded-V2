@@ -32,6 +32,11 @@ public:
     // Appends a triangle-list mesh modeled in [-1, 1]^3 (indices relative to its first vertex).
     // Returns its id, or MeshId::None if the data is invalid or the library is full.
     MeshId Add(std::span<const MeshVertex> vertices, std::span<const uint32_t> indices, uint8_t traits = 0);
+    // Appends a copy of an existing mesh under a new id (stand-in for a model whose file is missing).
+    MeshId AddCopy(MeshId source);
+    // Drops every imported mesh and frees its memory; only the built-in meshes remain. Bumps
+    // Generation(): ids of removed meshes become invalid and consumers must re-upload everything.
+    void Reset();
 
     // Number of mesh ids in use, including MeshId::None (valid ids are below this).
     uint32_t Count() const { return static_cast<uint32_t>(m_meshes.size()); }
@@ -45,8 +50,10 @@ public:
 
     std::span<const MeshVertex> Vertices() const { return m_vertices; }
     std::span<const uint32_t> Indices() const { return m_indices; }
-    // Bumped by every Add.
+    // Bumped by every Add and Reset.
     uint64_t Version() const { return m_version; }
+    // Bumped by Reset (the arrays were rebuilt, not just appended to).
+    uint64_t Generation() const { return m_generation; }
 
 private:
     std::vector<MeshVertex> m_vertices;
@@ -54,6 +61,7 @@ private:
     std::vector<Mesh> m_meshes; // indexed by MeshId
     MeshRange m_wireBox;
     uint64_t m_version = 1;
+    uint64_t m_generation = 1;
 };
 
 } // namespace lm

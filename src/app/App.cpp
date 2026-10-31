@@ -3,6 +3,7 @@
 #include "core/AllocationCounter.h"
 #include "core/Clock.h"
 #include "import/ModelImporter.h"
+#include "scene/MapFile.h"
 #include "scene/MockLevel.h"
 
 #include <imgui.h>
@@ -104,7 +105,11 @@ bool App::Init(const AppOptions& options)
         m_benchPhases[2].name = "orbit + move one item every frame (gizmo drag)";
     }
 
+    MarkSaved(); // the startup scene counts as unchanged
     m_window.Show();
+    if (!m_options.mapFile.empty())
+        LoadMapFrom(m_options.mapFile);
+    UpdateWindowTitle();
     MarkActive();
     return true;
 }
@@ -269,25 +274,287 @@ void App::RenderFrame()
         m_openImportDialog = false;
         ShowImportDialog();
     }
+    if (m_pendingFileAction != FileAction::None) {
+        const FileAction action = m_pendingFileAction;
+        m_pendingFileAction = FileAction::None;
+        RunFileAction(action);
+    }
+    UpdateWindowTitle();
 }
 
 void App::DrawMainMenu()
 {
+    bool exitRequested = false;
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Load...", "Ctrl+O"))
+                m_pendingFileAction = FileAction::Load;
+            ImGui::SetItemTooltip("Open a LevelMinded map (.lmmap). The current map is replaced.");
+            if (ImGui::MenuItem("Save", "Ctrl+S"))
+                m_pendingFileAction = FileAction::Save;
+            if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S"))
+                m_pendingFileAction = FileAction::SaveAs;
+            ImGui::Separator();
             if (ImGui::MenuItem("Import Asset...", "Ctrl+I"))
                 m_openImportDialog = true;
             ImGui::SetItemTooltip("Add .gltf, .glb or .obj models to the Assets palette.\n"
                                   "You can also drag model files onto the window.");
             ImGui::Separator();
             if (ImGui::MenuItem("Exit", "Alt+F4"))
-                m_quitRequested = true;
+                exitRequested = true;
             ImGui::EndMenu();
+        }
+        // Result of the last save / load, right-aligned.
+        if (!m_fileStatus.empty()) {
+            const float width = ImGui::CalcTextSize(m_fileStatus.c_str()).x + ImGui::GetStyle().ItemSpacing.x * 2.0f;
+            ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - width));
+            ImGui::TextColored(m_fileStatusIsError ? ImVec4(1.0f, 0.45f, 0.4f, 1.0f) : ImVec4(0.55f, 0.85f, 0.55f, 1.0f), "%s",
+                               m_fileStatus.c_str());
         }
         ImGui::EndMainMenuBar();
     }
-    if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_I))
-        m_openImportDialog = true;
+
+    if (!ImGui::GetIO().WantTextInput) {
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_I))
+            m_openImportDialog = true;
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O))
+            m_pendingFileAction = FileAction::Load;
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S))
+            m_pendingFileAction = FileAction::Save;
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S))
+            m_pendingFileAction = FileAction::SaveAs;
+    }
+    if (exitRequested && ConfirmDiscardChanges(L"quitting"))
+        m_quitRequested = true;
+}
+
+// ---------------------------------------------------------------------------------------- map files
+
+namespace {
+
+constexpr wchar_t kMapFilter[] = L"LevelMinded maps (*.lmmap)\0*.lmmap\0All files (*.*)\0*.*\0";
+
+std::wstring DisplayName(const std::filesystem::path& mapPath)
+{
+    return mapPath.empty() ? std::wstring(L"Untitled") : mapPath.filename().wstring();
+}
+
+std::string Utf8Text(const std::wstring& text)
+{
+    const std::u8string utf8 = std::filesystem::path(text).u8string();
+    return std::string(utf8.begin(), utf8.end());
+}
+
+std::string SizeText(size_t bytes)
+{
+    char text[32];
+    if (bytes < 10 * 1024)
+        std::snprintf(text, sizeof(text), "%zu bytes", bytes);
+    else if (bytes < 10 * 1024 * 1024)
+        std::snprintf(text, sizeof(text), "%.0f KB", double(bytes) / 1024.0);
+    else
+        std::snprintf(text, sizeof(text), "%.1f MB", double(bytes) / (1024.0 * 1024.0));
+    return text;
+}
+
+} // namespace
+
+void App::AfterModalDialog()
+{
+    // A modal OS dialog ran its own message loop between two frames. Key and button releases that
+    // happened while it was open went to the dialog (e.g. the 'O' of the Ctrl+O that opened it), and
+    // ImGui never sees a focus loss here (the focus-lost and focus-back events reach it in the same
+    // frame, which cancel out). Without this, such keys would stay "held" and the next press of the
+    // same shortcut would be ignored.
+    if (m_imguiReady) {
+        ImGui::GetIO().ClearInputKeys();
+        ImGui::GetIO().ClearInputMouse();
+    }
+    MarkActive();
+}
+
+bool App::HasUnsavedChanges() const
+{
+    return m_scene.ContentVersion() != m_savedContentVersion || m_catalog.ImportVersion() != m_savedImportVersion;
+}
+
+void App::MarkSaved()
+{
+    m_savedContentVersion = m_scene.ContentVersion();
+    m_savedImportVersion = m_catalog.ImportVersion();
+}
+
+void App::SetFileStatus(std::string text, bool isError)
+{
+    m_fileStatus = std::move(text);
+    m_fileStatusIsError = isError;
+}
+
+void App::UpdateWindowTitle()
+{
+    // Rebuilt only when the map or its saved state changes (no per-frame string work).
+    const bool unsaved = HasUnsavedChanges();
+    if (m_titleValid && unsaved == m_titleShowsUnsaved && m_titlePath == m_mapPath)
+        return;
+    m_titleValid = true;
+    m_titleShowsUnsaved = unsaved;
+    m_titlePath = m_mapPath;
+    const std::wstring title = DisplayName(m_mapPath) + (unsaved ? L"* - LevelMinded" : L" - LevelMinded");
+    ::SetWindowTextW(m_window.Handle(), title.c_str());
+}
+
+bool App::ConfirmDiscardChanges(const wchar_t* action)
+{
+    if (!HasUnsavedChanges())
+        return true;
+    const std::wstring message = L"Save changes to " + DisplayName(m_mapPath) + L" before " + action + L"?";
+    const int answer = ::MessageBoxW(m_window.Handle(), message.c_str(), L"LevelMinded", MB_YESNOCANCEL | MB_ICONWARNING);
+    AfterModalDialog();
+    if (answer == IDCANCEL)
+        return false;
+    if (answer == IDNO)
+        return true;
+    return m_mapPath.empty() ? SaveMapAs() : SaveMapTo(m_mapPath);
+}
+
+void App::RunFileAction(FileAction action)
+{
+    switch (action) {
+    case FileAction::Save:
+        if (m_mapPath.empty())
+            SaveMapAs();
+        else
+            SaveMapTo(m_mapPath);
+        break;
+    case FileAction::SaveAs:
+        SaveMapAs();
+        break;
+    case FileAction::Load: {
+        if (!ConfirmDiscardChanges(L"loading another map"))
+            break;
+        std::vector<wchar_t> buffer(4096, L'\0');
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = m_window.Handle();
+        dialog.lpstrFilter = kMapFilter;
+        dialog.lpstrFile = buffer.data();
+        dialog.nMaxFile = static_cast<DWORD>(buffer.size());
+        dialog.lpstrTitle = L"Load Map";
+        dialog.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
+        const BOOL chosen = ::GetOpenFileNameW(&dialog);
+        AfterModalDialog();
+        if (chosen)
+            LoadMapFrom(buffer.data());
+        break;
+    }
+    case FileAction::None:
+        break;
+    }
+}
+
+bool App::SaveMapAs()
+{
+    std::vector<wchar_t> buffer(4096, L'\0');
+    const std::wstring initial = m_mapPath.empty() ? std::wstring(L"Untitled.lmmap") : m_mapPath.filename().wstring();
+    std::copy(initial.begin(), initial.end(), buffer.begin());
+    const std::wstring folder = m_mapPath.empty() ? std::wstring() : m_mapPath.parent_path().wstring();
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = m_window.Handle();
+    dialog.lpstrFilter = kMapFilter;
+    dialog.lpstrFile = buffer.data();
+    dialog.nMaxFile = static_cast<DWORD>(buffer.size());
+    dialog.lpstrInitialDir = folder.empty() ? nullptr : folder.c_str();
+    dialog.lpstrTitle = L"Save Map As";
+    dialog.lpstrDefExt = L"lmmap";
+    dialog.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
+    const BOOL chosen = ::GetSaveFileNameW(&dialog);
+    AfterModalDialog();
+    return chosen && SaveMapTo(buffer.data());
+}
+
+bool App::SaveMapTo(const std::filesystem::path& path)
+{
+    const EditorCamera& camera = m_viewport.Camera();
+    const MapCamera mapCamera{camera.Target(), camera.Yaw(), camera.Pitch(), camera.Distance()};
+    const double start = Clock::Now();
+    std::string error;
+    MapSaveInfo info;
+    if (!SaveMap(path, m_scene, m_catalog, mapCamera, error, &info)) {
+        const std::wstring message = L"Could not save " + path.filename().wstring() + L":\n" +
+                                     std::filesystem::path(std::u8string(error.begin(), error.end())).wstring();
+        ::MessageBoxW(m_window.Handle(), message.c_str(), L"LevelMinded", MB_OK | MB_ICONERROR);
+        AfterModalDialog();
+        SetFileStatus("Save failed", true);
+        return false;
+    }
+    m_mapPath = path;
+    MarkSaved();
+    char timing[64];
+    std::snprintf(timing, sizeof(timing), " in %.1f ms", (Clock::Now() - start) * 1000.0);
+    SetFileStatus("Saved " + Utf8Text(path.filename().wstring()) + ": " + WithThousandsSeparators(info.nodes) + " nodes, " +
+                      SizeText(info.bytes) + timing,
+                  false);
+    MarkActive();
+    return true;
+}
+
+bool App::LoadMapFrom(const std::filesystem::path& path)
+{
+    const double start = Clock::Now();
+    std::string error;
+    MapLoadReport report;
+    if (!LoadMap(path, m_scene, m_catalog, m_meshes, report, error)) {
+        const std::wstring message = L"Could not load " + path.filename().wstring() + L":\n" +
+                                     std::filesystem::path(std::u8string(error.begin(), error.end())).wstring() +
+                                     L"\n\nThe current map was not changed.";
+        ::MessageBoxW(m_window.Handle(), message.c_str(), L"LevelMinded", MB_OK | MB_ICONERROR);
+        AfterModalDialog();
+        SetFileStatus("Load failed", true);
+        return false;
+    }
+    const double ms = (Clock::Now() - start) * 1000.0;
+
+    // Everything that held NodeIds or palette indices of the old map starts fresh.
+    m_hierarchy.Reset();
+    m_assets.Reset();
+    m_pendingImports.clear();
+    if (report.hasCamera) {
+        EditorCamera& camera = m_viewport.MutableCamera();
+        camera.SetOrientation(report.camera.yaw, report.camera.pitch);
+        camera.SetTarget(report.camera.target);
+        camera.SetDistance(report.camera.distance);
+    }
+    m_mapPath = path;
+    MarkSaved();
+
+    char timing[64];
+    std::snprintf(timing, sizeof(timing), " in %.0f ms", ms);
+    std::string status = "Loaded " + Utf8Text(path.filename().wstring()) + ": " + WithThousandsSeparators(report.nodes) +
+                         " nodes, " + std::to_string(report.assets) + " models" + timing;
+    if (!report.missingAssets.empty())
+        status += " (" + std::to_string(report.missingAssets.size()) + " model files missing)";
+    SetFileStatus(status, !report.missingAssets.empty());
+    MarkActive();
+
+    if (!report.missingAssets.empty()) {
+        std::string names;
+        for (size_t i = 0; i < report.missingAssets.size() && i < 10; ++i)
+            names += "\n  - " + report.missingAssets[i];
+        if (report.missingAssets.size() > 10)
+            names += "\n  ...";
+        const std::wstring message = L"These model files could not be found, so their items are shown as boxes:" +
+                                     std::filesystem::path(std::u8string(names.begin(), names.end())).wstring() +
+                                     L"\n\nMove the files back (next to the map, or to their old folder) and load the map again.";
+        ::MessageBoxW(m_window.Handle(), message.c_str(), L"LevelMinded", MB_OK | MB_ICONWARNING);
+        AfterModalDialog();
+    }
+    return true;
+}
+
+bool App::OnWindowCloseRequested()
+{
+    return ConfirmDiscardChanges(L"quitting");
 }
 
 void App::ShowImportDialog()
@@ -304,7 +571,7 @@ void App::ShowImportDialog()
     dialog.lpstrTitle = L"Import Asset";
     dialog.Flags = OFN_EXPLORER | OFN_ALLOWMULTISELECT | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
     const BOOL chosen = ::GetOpenFileNameW(&dialog);
-    MarkActive(); // draw a fresh frame once the dialog closes
+    AfterModalDialog();
     if (!chosen) {
         if (::CommDlgExtendedError() == FNERR_BUFFERTOOSMALL)
             m_assets.SetStatus("Too many files selected at once.", true);
@@ -354,15 +621,6 @@ std::string Utf8(const std::filesystem::path& path)
     return std::string(text.begin(), text.end());
 }
 
-// "12,345"
-std::string Thousands(size_t value)
-{
-    std::string digits = std::to_string(value);
-    for (int i = static_cast<int>(digits.size()) - 3; i > 0; i -= 3)
-        digits.insert(static_cast<size_t>(i), 1, ',');
-    return digits;
-}
-
 } // namespace
 
 bool App::ImportFile(const std::wstring& path, std::string& message)
@@ -398,9 +656,9 @@ bool App::ImportFile(const std::wstring& path, std::string& message)
     }
     const double ms = (Clock::Now() - start) * 1000.0;
 
-    const std::string triangles = Thousands(model.indices.size() / 3);
-    const std::string description = std::string(model.format) + " model, " + triangles + " triangles (" + fileName + ")";
-    const size_t index = m_catalog.AddImported(model.name, description, model.format, mesh, model.halfExtents, file);
+    const std::string triangles = WithThousandsSeparators(model.indices.size() / 3);
+    const size_t index = m_catalog.AddImported(model.name, DescribeImportedModel(model, fileName), model.format, mesh,
+                                               model.halfExtents, file);
     m_assets.Highlight(index);
 
     char timing[64];

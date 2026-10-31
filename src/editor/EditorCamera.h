@@ -25,6 +25,7 @@ public:
     void SetTarget(const DirectX::XMFLOAT3& target) { m_target = target; }
     // Moves the camera back along its view direction until a sphere of `radius` around the target fits.
     void FrameSphere(float radius);
+    void SetDistance(float distance); // clamped to the camera's limits
 
     DirectX::XMFLOAT3 Eye() const;
     const DirectX::XMFLOAT3& Target() const { return m_target; }

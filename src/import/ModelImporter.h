@@ -42,4 +42,10 @@ bool IsImportableModel(const std::filesystem::path& path);
 // the result's own two arrays.
 ImportResult ImportModel(const std::filesystem::path& path);
 
+// Palette description of an imported model: "glTF model, 12,345 triangles (chair.glb)".
+std::string DescribeImportedModel(const ImportedModel& model, const std::string& fileName);
+
+// "12345" -> "12,345"
+std::string WithThousandsSeparators(size_t value);
+
 } // namespace lm

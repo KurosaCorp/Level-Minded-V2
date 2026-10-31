@@ -12,6 +12,7 @@ namespace {
 //   --bench N         run the benchmark script, N frames per phase, write a report and exit
 //   --bench-out PATH  benchmark report path (default: bench.txt in the working directory)
 //   --import PATH     import a .gltf/.glb/.obj model into the Assets palette (repeatable)
+//   --map PATH        load a .lmmap map at startup
 lm::AppOptions ParseCommandLine()
 {
     lm::AppOptions options;
@@ -30,6 +31,8 @@ lm::AppOptions ParseCommandLine()
             options.benchOutput = value, ++i;
         else if (std::wcscmp(key, L"--import") == 0)
             options.importFiles.emplace_back(value), ++i;
+        else if (std::wcscmp(key, L"--map") == 0)
+            options.mapFile = value, ++i;
     }
     ::LocalFree(argv);
     return options;

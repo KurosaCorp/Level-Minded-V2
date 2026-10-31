@@ -24,6 +24,8 @@ public:
     void SetStatus(std::string text, bool isError);
     // Scrolls to the tile of catalog item `index` on the next Draw and highlights it until the next click.
     void Highlight(size_t index);
+    // Forgets per-item state (spawn counters, highlight): call after the catalog's imports were replaced.
+    void Reset();
 
 private:
     bool DrawTile(const CatalogItem& item, float tileSize, float dpiScale, bool highlighted);

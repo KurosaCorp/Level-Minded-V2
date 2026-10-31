@@ -45,6 +45,12 @@ public:
                        const DirectX::XMFLOAT3& halfExtents, const std::filesystem::path& source);
     // Index of the item imported from `source` (same file, any spelling of its path), or npos.
     size_t FindSource(const std::filesystem::path& source) const;
+    // Index of the imported item showing `mesh`, or npos.
+    size_t FindMesh(MeshId mesh) const;
+    // Removes every imported item (map loading); the built-in items remain.
+    void ResetImported();
+    // Bumped whenever imported items are added or removed (part of a map's saved state).
+    uint64_t ImportVersion() const { return m_importVersion; }
 
 private:
     static std::wstring SourceKey(const std::filesystem::path& path);
@@ -53,6 +59,7 @@ private:
     std::deque<std::string> m_text; // stable storage for imported names and descriptions
     std::vector<std::filesystem::path> m_sources; // parallel to m_items
     std::vector<std::wstring> m_sourceKeys;       // parallel to m_items, normalized for comparison
+    uint64_t m_importVersion = 0;
 };
 
 // Creates a node for `item` under `parent` (kInvalidNode = top level), standing on the ground with

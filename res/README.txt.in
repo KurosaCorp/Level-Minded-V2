@@ -30,6 +30,12 @@ Hierarchy (left)  Click a group to select everything inside it; the eye icon hid
 Assets (right)    Click an item to place it at the origin, inside the active Hierarchy group
                   (shown at the top of the panel).
 
+Maps
+----
+File > Load (Ctrl+O), Save (Ctrl+S), Save As (Ctrl+Shift+S). Maps are .lmmap files (readable JSON).
+They keep the whole hierarchy, transforms, visibility, imported models (by file path) and the camera.
+A * in the title bar means unsaved changes; you are asked before they would be lost.
+
 Importing models
 ----------------
 Drag .gltf, .glb or .obj files onto the window, or use File > Import Asset (Ctrl+I).
@@ -42,9 +48,11 @@ Command line (testing)
 --bench N          Run the built-in benchmark (N frames per phase), write bench.txt, exit
 --bench-out PATH   Benchmark report location
 --import PATH      Import a model into the Assets panel at startup (repeatable)
+--map PATH         Load a map at startup
 
 Third-party software
 --------------------
 Dear ImGui (MIT license), see THIRD_PARTY_LICENSE_DearImGui.txt.
 cgltf (MIT license), see THIRD_PARTY_LICENSE_cgltf.txt.
 fast_obj (MIT license), see THIRD_PARTY_LICENSE_fast_obj.txt.
+simdjson (Apache 2.0 / MIT, used under MIT), see THIRD_PARTY_LICENSE_simdjson.txt.

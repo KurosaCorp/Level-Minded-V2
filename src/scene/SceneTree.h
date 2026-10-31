@@ -88,6 +88,9 @@ public:
     // `bounds` gives the initial placement: centered at bounds.center, unrotated, scale 1.
     NodeId CreateItem(std::string_view name, NodeKind kind, const Bounds& bounds, NodeId parent = kInvalidNode,
                       MeshId mesh = MeshId::Default);
+    // Full placement (map loading): `halfExtents` is the item's local size, `transform` its placement.
+    NodeId CreateItem(std::string_view name, NodeKind kind, const Transform& transform, const DirectX::XMFLOAT3& halfExtents,
+                      NodeId parent, MeshId mesh);
 
     // Moves `node` and its subtree under `newParent` (kInvalidNode = top level), placed before the
     // sibling `before` (kInvalidNode = last). Returns false and changes nothing if the move is invalid.
@@ -98,7 +101,11 @@ public:
     // Removes the node and its whole subtree.
     void Remove(NodeId node);
     void Rename(NodeId node, std::string_view name);
+    // Removes every node and frees all of the tree's memory (not just its contents). Versions keep
+    // counting up, so caches built from the old tree are rebuilt.
     void Clear();
+    // Pre-allocates for `nodes` nodes with `nameChars` name characters in total (bulk building).
+    void Reserve(uint32_t nodes, size_t nameChars);
 
     // ---- Visibility, selection, UI state (no index changes).
 
@@ -147,6 +154,9 @@ public:
     uint64_t RenderVersion() const { return m_renderVersion; }
     // Bumped by every transform change.
     uint64_t TransformVersion() const { return m_transformVersion; }
+    // Bumped by every change that would be saved to a map file: structure, names, visibility and
+    // transforms (not selection or expand/collapse). Used to detect unsaved changes.
+    uint64_t ContentVersion() const { return m_contentVersion; }
     // Items whose transform changed since RenderVersion() last changed, oldest first (ids may repeat).
     // Any RenderVersion() bump clears it (consumers rebuild then anyway). If it would grow past the
     // scene size, a RenderVersion() bump replaces it, so it stays bounded during long drags.
@@ -183,7 +193,7 @@ private:
     void CompactNamesIfNeeded();
     void RebuildLinks();
     void UpdateEffectiveVisibility(uint32_t first, uint32_t end);
-    void StructureChanged() { ++m_layoutVersion; RenderChanged(); }
+    void StructureChanged() { ++m_layoutVersion; ++m_contentVersion; RenderChanged(); }
     void RenderChanged() { ++m_renderVersion; m_transformChanges.clear(); }
 
     std::vector<Node> m_nodes;          // hot: traversal, flags
@@ -198,6 +208,7 @@ private:
     uint64_t m_layoutVersion = 0;
     uint64_t m_renderVersion = 0;
     uint64_t m_transformVersion = 0;
+    uint64_t m_contentVersion = 0;
 };
 
 } // namespace lm

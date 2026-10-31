@@ -34,6 +34,8 @@ add_library(levelminded_core STATIC
     src/render/MeshLibrary.h
     src/scene/ItemCatalog.cpp
     src/scene/ItemCatalog.h
+    src/scene/MapFile.cpp
+    src/scene/MapFile.h
     src/scene/MockLevel.cpp
     src/scene/MockLevel.h
     src/scene/Picking.cpp
@@ -43,7 +45,7 @@ add_library(levelminded_core STATIC
     src/scene/Transform.h
 )
 target_include_directories(levelminded_core PUBLIC src)
-target_link_libraries(levelminded_core PRIVATE lm_loaders)
+target_link_libraries(levelminded_core PRIVATE lm_loaders lm_simdjson)
 lm_apply_project_warnings(levelminded_core)
 
 # Version-stamped resources, generated from res/*.in.
@@ -138,3 +140,4 @@ install(FILES "${LM_GENERATED_DIR}/README.txt" DESTINATION .)
 install(FILES "${imgui_SOURCE_DIR}/LICENSE.txt" DESTINATION . RENAME THIRD_PARTY_LICENSE_DearImGui.txt)
 install(FILES "${cgltf_SOURCE_DIR}/LICENSE" DESTINATION . RENAME THIRD_PARTY_LICENSE_cgltf.txt)
 install(FILES "${fast_obj_SOURCE_DIR}/LICENSE" DESTINATION . RENAME THIRD_PARTY_LICENSE_fast_obj.txt)
+install(FILES "${LM_SIMDJSON_DIR}/LICENSE-MIT" DESTINATION . RENAME THIRD_PARTY_LICENSE_simdjson.txt)

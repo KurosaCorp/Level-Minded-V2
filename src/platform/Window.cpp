@@ -196,6 +196,11 @@ LRESULT Window::WndProc(UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
 
+    case WM_CLOSE:
+        if (m_handler && !m_handler->OnWindowCloseRequested())
+            return 0; // e.g. unsaved changes and the user chose Cancel
+        break;          // DefWindowProc destroys the window
+
     case WM_DESTROY:
         ::PostQuitMessage(0);
         return 0;

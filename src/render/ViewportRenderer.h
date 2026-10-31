@@ -134,6 +134,7 @@ private:
     size_t m_uploadedVertices = 0; // library prefix already on the GPU
     size_t m_uploadedIndices = 0;
     uint64_t m_meshVersion = 0;
+    uint64_t m_meshGeneration = 0;
 
     // Scene layer, CPU side: per-mesh buckets + outlines; GPU side: one instance buffer laid out as
     // [mesh 1 instances][mesh 2 instances]...[outline instances]. An InstanceHandle is

@@ -32,6 +32,8 @@ public:
     void SetActiveNode(NodeId node) { m_activeNode = node; }
     // Expands all ancestors of `node` and scrolls it into view on the next Draw().
     void Reveal(SceneTree& tree, NodeId node);
+    // Forgets every NodeId it holds (active node, rename, queued edits): call after the tree was replaced.
+    void Reset();
 
 private:
     struct PendingMove {

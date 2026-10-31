@@ -5,11 +5,14 @@
 #include "render/MeshGeometry.h"
 #include "render/MeshLibrary.h"
 #include "scene/ItemCatalog.h"
+#include "scene/MapFile.h"
 #include "scene/MockLevel.h"
 #include "scene/Picking.h"
 #include "scene/SceneTree.h"
 
 #include <chrono>
+#include <cstring>
+#include <iterator>
 #include <cmath>
 #include <set>
 #include <cstdio>
@@ -17,6 +20,9 @@
 #include <fstream>
 #include <string>
 #include <vector>
+
+#include <windows.h>
+#include <psapi.h>
 
 using namespace lm;
 
@@ -807,6 +813,211 @@ void TestAssetCatalog()
     CHECK(catalog.Source(a) == source && catalog.Source(0).empty());
 }
 
+// ---- Map files
+
+std::string ReadText(const std::filesystem::path& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+}
+
+// Same structure, names, saved flags, exact transforms and meshes (ids compared through `sameMesh`).
+template <typename MeshCompare>
+bool SameScene(const SceneTree& a, const SceneTree& b, MeshCompare&& sameMesh)
+{
+    if (a.Size() != b.Size())
+        return false;
+    constexpr uint8_t kSaved = SceneTree::kVisible | SceneTree::kEffectivelyVisible | SceneTree::kExpanded;
+    for (uint32_t i = 0; i < a.Size(); ++i) {
+        const SceneTree::Node& x = a.NodeAt(i);
+        const SceneTree::Node& y = b.NodeAt(i);
+        if (x.kind != y.kind || x.depth != y.depth || x.subtreeSize != y.subtreeSize || x.parent != y.parent ||
+            (x.flags & kSaved) != (y.flags & kSaved) || a.NameAt(i) != b.NameAt(i))
+            return false;
+        if (!x.IsGroup()) {
+            const ItemData& p = a.ItemAt(i);
+            const ItemData& q = b.ItemAt(i);
+            if (std::memcmp(&p.transform, &q.transform, sizeof(Transform)) != 0 ||
+                std::memcmp(&p.halfExtents, &q.halfExtents, sizeof(p.halfExtents)) != 0 || !sameMesh(p.mesh, q.mesh))
+                return false;
+        }
+    }
+    return true;
+}
+
+bool SameBuiltinMesh(MeshId a, MeshId b)
+{
+    return a == b;
+}
+
+void TestMapRoundTrip()
+{
+    const std::filesystem::path dir = TestDir() / "maps";
+    std::filesystem::create_directories(dir);
+
+    // The sample level plus everything a map must keep: rotations, scales, odd floats, hidden and
+    // collapsed groups, an empty group, top-level items, names that need escaping.
+    SceneTree scene;
+    BuildMockLevel(scene);
+    for (uint32_t i = 0, n = 0; i < scene.Size(); ++i) {
+        if (scene.NodeAt(i).IsGroup())
+            continue;
+        Transform t = scene.TransformAt(i);
+        DirectX::XMStoreFloat4(&t.rotation, DirectX::XMQuaternionRotationRollPitchYaw(0.1f * float(n), 0.37f * float(n), 1.3f));
+        t.scale = {1.0f + 0.013f * float(n), 0.3333333f, 2.0f};
+        t.position.x += 0.1f; // not exactly representable
+        scene.SetTransformAt(i, t);
+        if (++n == 12)
+            break;
+    }
+    const NodeId lighting = scene.NodeAt(scene.SubtreeEnd(1)).id; // a sub-group of World
+    scene.SetVisible(lighting, false);
+    scene.SetExpanded(scene.NodeAt(1).id, false);
+    const NodeId empty = scene.CreateGroup("Empty group");
+    const NodeId odd = scene.CreateItem("Quote \"q\" back\\slash\ttab \xC3\xBC \xE6\x97\xA5\xE6\x9C\xAC", NodeKind::Light,
+                                        Bounds{{-0.0f, 1e-7f, 123456.789f}, {0.25f, 0.25f, 0.25f}});
+    scene.SetVisible(odd, false);
+    (void)empty;
+    scene.SetSelected(scene.NodeAt(0).id, true); // selection is editor state, not saved
+
+    const AssetCatalog catalog;
+    MapCamera camera;
+    camera.target = {1.5f, -2.25f, 0.1f};
+    camera.yaw = -1.0471976f;
+    camera.pitch = 0.5235988f;
+    camera.distance = 34.0f;
+    std::string error;
+    MapSaveInfo info;
+    CHECK(SaveMap(dir / "level.lmmap", scene, catalog, camera, error, &info) && error.empty());
+    CHECK(info.nodes == scene.Size() && info.bytes > 0 && info.assets == 0);
+    const std::string saved = ReadText(dir / "level.lmmap");
+    CHECK(saved.size() == info.bytes);
+    CHECK(saved.find("\"format\": \"LevelMinded map\"") != std::string::npos);
+    CHECK(saved.find("\"visible\": false") != std::string::npos && saved.find("\"expanded\": false") != std::string::npos);
+    CHECK(!std::filesystem::exists(dir / "level.lmmap.saving")); // temporary file replaced the target
+
+    // Load into a different editor state: everything is replaced and comes back exactly.
+    SceneTree loaded;
+    BuildStressLevel(loaded, 1000); // old contents that must disappear
+    const uint64_t renderBefore = loaded.RenderVersion();
+    AssetCatalog loadedCatalog;
+    MeshLibrary meshes;
+    MapLoadReport report;
+    CHECK(LoadMap(dir / "level.lmmap", loaded, loadedCatalog, meshes, report, error));
+    CHECK(loaded.Validate());
+    CHECK(SameScene(scene, loaded, SameBuiltinMesh));
+    CHECK(loaded.SelectedItemCount() == 0);
+    CHECK(loaded.RenderVersion() > renderBefore); // caches of the old scene are invalidated
+    CHECK(report.nodes == scene.Size() && report.assets == 0 && report.missingAssets.empty());
+    CHECK(report.hasCamera && report.camera.yaw == camera.yaw && report.camera.target.y == camera.target.y &&
+          report.camera.distance == camera.distance);
+
+    // Saving what was loaded writes the identical file: nothing is lost or rounded.
+    CHECK(WriteMapJson(loaded, loadedCatalog, report.camera, dir) == saved);
+
+    // Hand-written maps: fields in any order, optional fields left out, a UTF-8 BOM, unknown keys.
+    WriteText(dir / "hand.lmmap",
+              "\xEF\xBB\xBF{\"nodes\": [{\"children\": [{\"halfExtents\": [1, 2, 3], \"name\": \"Box\", \"type\": \"brush\", "
+              "\"mesh\": \"cube\", \"position\": [0, 0, 3], \"future\": {\"x\": [1]}}], \"name\": \"G\", \"type\": \"group\"}], "
+              "\"version\": 1, \"format\": \"LevelMinded map\", \"comment\": \"hi\"}");
+    CHECK(LoadMap(dir / "hand.lmmap", loaded, loadedCatalog, meshes, report, error));
+    CHECK(loaded.Size() == 2 && loaded.NameAt(0) == "G" && loaded.NameAt(1) == "Box" && loaded.NodeAt(1).parent == 0);
+    CHECK(Near3(loaded.ItemAt(1).halfExtents, 1, 2, 3) && loaded.ItemAt(1).transform.scale.x == 1.0f &&
+          loaded.ItemAt(1).mesh == MeshId::Cube && !report.hasCamera);
+
+    // Broken or foreign files are refused and leave the current scene exactly as it was.
+    const uint64_t content = loaded.ContentVersion();
+    const auto refused = [&](const char* name, const std::string& json) {
+        WriteText(dir / name, json);
+        std::string why;
+        const bool ok = LoadMap(dir / name, loaded, loadedCatalog, meshes, report, why);
+        return !ok && !why.empty() && loaded.Size() == 2 && loaded.ContentVersion() == content && loaded.Validate();
+    };
+    const std::string head = "{\"format\": \"LevelMinded map\", \"version\": 1, ";
+    CHECK(refused("broken.lmmap", "{\"format\": \"LevelMinded map\", \"nodes\": ["));
+    CHECK(refused("foreign.lmmap", "{\"format\": \"Something else\", \"version\": 1, \"nodes\": []}"));
+    CHECK(refused("future.lmmap", "{\"format\": \"LevelMinded map\", \"version\": 99, \"nodes\": []}"));
+    CHECK(refused("noversion.lmmap", "{\"format\": \"LevelMinded map\", \"nodes\": []}"));
+    CHECK(refused("badasset.lmmap", head + "\"nodes\": [{\"type\": \"mesh\", \"name\": \"x\", \"asset\": 3}]}"));
+    CHECK(refused("badtype.lmmap", head + "\"nodes\": [{\"type\": \"spaceship\", \"name\": \"x\"}]}"));
+    CHECK(refused("itemkids.lmmap", head + "\"nodes\": [{\"type\": \"brush\", \"name\": \"x\", \"children\": []}]}"));
+    CHECK(refused("badnumber.lmmap", head + "\"nodes\": [{\"type\": \"brush\", \"name\": \"x\", \"position\": [1, \"2\", 3]}]}"));
+    CHECK(refused("shortvec.lmmap", head + "\"nodes\": [{\"type\": \"brush\", \"name\": \"x\", \"position\": [1, 2]}]}"));
+    CHECK(refused("notjson.lmmap", "this is not a map"));
+    std::string why;
+    CHECK(!LoadMap(dir / "does-not-exist.lmmap", loaded, loadedCatalog, meshes, report, why) && loaded.Size() == 2);
+
+    // Clear really frees the tree's memory (not just its contents).
+    loaded.Clear();
+    CHECK(loaded.Memory().Total() == 0 && loaded.Size() == 0 && loaded.Validate());
+}
+
+void TestMapAssets()
+{
+    const std::filesystem::path dir = TestDir() / "maps";
+    std::filesystem::create_directories(dir / "models");
+    std::filesystem::copy_file(TestDir() / "box.obj", dir / "models" / "box.obj", std::filesystem::copy_options::overwrite_existing);
+    std::filesystem::copy_file(TestDir() / "box.mtl", dir / "models" / "box.mtl", std::filesystem::copy_options::overwrite_existing);
+
+    // An imported model in the palette and two items using it.
+    MeshLibrary meshes;
+    AssetCatalog catalog;
+    const ImportResult box = ImportModel(dir / "models" / "box.obj");
+    CHECK(box.ok);
+    const MeshId boxMesh = meshes.Add(box.model.vertices, box.model.indices, box.model.traits);
+    const size_t boxItem = catalog.AddImported(box.model.name, "box", box.model.format, boxMesh, box.model.halfExtents,
+                                               dir / "models" / "box.obj");
+    SceneTree scene;
+    const NodeId group = scene.CreateGroup("Props");
+    SpawnCatalogItem(scene, catalog.Items()[boxItem], group, "Box_01");
+    const NodeId second = SpawnCatalogItem(scene, catalog.Items()[boxItem], group, "Box_02");
+    Transform t = scene.TransformAt(scene.IndexOf(second));
+    t.position = {5.0f, 0.0f, 2.0f};
+    scene.SetTransform(second, t);
+    scene.CreateItem("Crate", NodeKind::Brush, Bounds{{0, 3, 0.5f}, {0.5f, 0.5f, 0.5f}}, group);
+
+    std::string error;
+    CHECK(SaveMap(dir / "assets.lmmap", scene, catalog, MapCamera{}, error));
+    const std::string saved = ReadText(dir / "assets.lmmap");
+    CHECK(saved.find("\"path\": \"models/box.obj\"") != std::string::npos); // relative to the map
+    CHECK(saved.find("\"asset\": 0") != std::string::npos);
+
+    // Loading re-imports the model into a fresh library: same items, now pointing at the new mesh id.
+    SceneTree loaded;
+    AssetCatalog loadedCatalog;
+    MeshLibrary loadedMeshes;
+    loadedMeshes.Add(box.model.vertices, box.model.indices); // an old imported mesh that must go away
+    const uint64_t generation = loadedMeshes.Generation();
+    MapLoadReport report;
+    CHECK(LoadMap(dir / "assets.lmmap", loaded, loadedCatalog, loadedMeshes, report, error));
+    CHECK(loadedMeshes.Generation() > generation && loadedMeshes.Count() == kBuiltinMeshCount + 1);
+    CHECK(report.assets == 1 && report.missingAssets.empty());
+    CHECK(loadedCatalog.Items().size() == ItemCatalog().size() + 1);
+    const CatalogItem& asset = loadedCatalog.Items().back();
+    CHECK(std::string(asset.name) == "box" && std::string(asset.format) == "OBJ" && IsImportedMesh(asset.mesh));
+    CHECK(loadedMeshes.Get(asset.mesh).range.indexCount == 36);
+    const auto sameAsset = [&](MeshId a, MeshId b) { return a == boxMesh ? b == asset.mesh : a == b; };
+    CHECK(SameScene(scene, loaded, sameAsset));
+    CHECK(WriteMapJson(loaded, loadedCatalog, report.camera, dir) == saved);
+
+    // Map moved elsewhere: the relative path fails, the absolute path still finds the model.
+    std::filesystem::create_directories(dir / "elsewhere");
+    std::filesystem::copy_file(dir / "assets.lmmap", dir / "elsewhere" / "assets.lmmap", std::filesystem::copy_options::overwrite_existing);
+    CHECK(LoadMap(dir / "elsewhere" / "assets.lmmap", loaded, loadedCatalog, loadedMeshes, report, error));
+    CHECK(report.missingAssets.empty() && loadedMeshes.Get(loadedCatalog.Items().back().mesh).range.indexCount == 36);
+
+    // Model file gone: the map still loads, the items become boxes of the recorded size, and the
+    // asset entry (with its path) survives a re-save.
+    std::filesystem::remove(dir / "models" / "box.obj");
+    CHECK(LoadMap(dir / "assets.lmmap", loaded, loadedCatalog, loadedMeshes, report, error));
+    CHECK(report.missingAssets.size() == 1 && report.missingAssets[0] == "box");
+    CHECK(loaded.Size() == scene.Size() && IsImportedMesh(loaded.ItemAt(1).mesh));
+    CHECK(loadedMeshes.Get(loaded.ItemAt(1).mesh).range.indexCount == loadedMeshes.Get(MeshId::Cube).range.indexCount);
+    CHECK(Near3(loaded.ItemAt(1).halfExtents, box.model.halfExtents.x, box.model.halfExtents.y, box.model.halfExtents.z));
+    const std::string resaved = WriteMapJson(loaded, loadedCatalog, report.camera, dir);
+    CHECK(resaved.find("\"path\": \"models/box.obj\"") != std::string::npos && resaved.find("\"asset\": 0") != std::string::npos);
+}
+
 template <typename F>
 double TimeMicroseconds(F&& work, int repeats = 20)
 {
@@ -867,6 +1078,41 @@ void Benchmark()
     const double pickUs = TimeMicroseconds([&] { hit = PickItem(level, meshes, ray); }, 10);
     CHECK(hit && Near(hit.distance, 29.5f, 1e-3f) && hit.itemsTested == 100000u);
     std::printf("  pick (ray vs 100,000 items)       %8.1f us\n", pickUs);
+
+    // Map files: save and load the 100,000-item level; loading again and again must not grow memory.
+    {
+        const std::filesystem::path path = TestDir() / "maps" / "stress.lmmap";
+        std::filesystem::create_directories(path.parent_path());
+        const AssetCatalog catalog;
+        std::string error;
+        MapSaveInfo info;
+        bool saved = false;
+        const double saveUs = TimeMicroseconds([&] { saved = SaveMap(path, level, catalog, MapCamera{}, error, &info); }, 3);
+        CHECK(saved);
+
+        SceneTree loaded;
+        AssetCatalog loadedCatalog;
+        MeshLibrary loadedMeshes;
+        MapLoadReport report;
+        bool ok = false;
+        const double loadUs = TimeMicroseconds([&] { ok = LoadMap(path, loaded, loadedCatalog, loadedMeshes, report, error); }, 3);
+        CHECK(ok && SameScene(level, loaded, SameBuiltinMesh));
+
+        const auto privateBytes = [] {
+            PROCESS_MEMORY_COUNTERS_EX counters{};
+            ::GetProcessMemoryInfo(::GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters));
+            return double(counters.PrivateUsage) / (1024.0 * 1024.0);
+        };
+        const double before = privateBytes();
+        for (int i = 0; i < 10; ++i)
+            ok &= LoadMap(path, loaded, loadedCatalog, loadedMeshes, report, error);
+        const double after = privateBytes();
+        CHECK(ok && after - before < 4.0); // ten more loads of a 100k-item map: no growth beyond noise
+
+        std::printf("  save map (100,000 items, %.1f MB) %8.1f ms\n", double(info.bytes) / (1024.0 * 1024.0), saveUs / 1000.0);
+        std::printf("  load map (100,000 items)          %8.1f ms\n", loadUs / 1000.0);
+        std::printf("  memory after 10 more loads        %+8.2f MB\n", after - before);
+    }
 }
 
 } // namespace
@@ -888,6 +1134,8 @@ int main()
     TestImportObj();
     TestImportGltf();
     TestAssetCatalog();
+    TestMapRoundTrip();
+    TestMapAssets();
     Benchmark();
 
     std::printf("%d checks, %d failures\n", g_checks, g_failures);

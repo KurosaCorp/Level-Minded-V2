@@ -40,6 +40,18 @@ NodeId SceneTree::CreateItem(std::string_view name, NodeKind kind, const Bounds&
     return Insert(name, kind, item, parent);
 }
 
+NodeId SceneTree::CreateItem(std::string_view name, NodeKind kind, const Transform& transform,
+                             const DirectX::XMFLOAT3& halfExtents, NodeId parent, MeshId mesh)
+{
+    if (kind == NodeKind::Group)
+        return kInvalidNode;
+    ItemData item;
+    item.transform = transform;
+    item.halfExtents = halfExtents;
+    item.mesh = mesh == MeshId::Default ? DefaultMesh(kind) : mesh;
+    return Insert(name, kind, item, parent);
+}
+
 SceneTree::NameRef SceneTree::StoreName(std::string_view name)
 {
     // `name` may point into m_nameChars itself (e.g. renaming to an existing name); copy first,
@@ -204,18 +216,31 @@ void SceneTree::Rename(NodeId nodeId, std::string_view name)
     m_names[index] = StoreName(name);
     ReleaseName(old);
     CompactNamesIfNeeded();
+    ++m_contentVersion;
 }
 
 void SceneTree::Clear()
 {
-    m_nodes.clear();
-    m_names.clear();
-    m_items.clear();
-    m_nameChars.clear();
-    m_indexOf.clear();
+    // Swap with empty vectors: clear() alone would keep every buffer's capacity allocated.
+    std::vector<Node>().swap(m_nodes);
+    std::vector<NameRef>().swap(m_names);
+    std::vector<ItemData>().swap(m_items);
+    std::vector<char>().swap(m_nameChars);
+    std::vector<uint32_t>().swap(m_indexOf);
+    std::vector<uint32_t>().swap(m_stack);
+    std::vector<NodeId>().swap(m_transformChanges);
     m_selectedItemCount = 0;
     m_nameGarbage = 0;
     StructureChanged();
+}
+
+void SceneTree::Reserve(uint32_t nodes, size_t nameChars)
+{
+    m_nodes.reserve(nodes);
+    m_names.reserve(nodes);
+    m_items.reserve(nodes);
+    m_indexOf.reserve(m_indexOf.size() + nodes);
+    m_nameChars.reserve(m_nameChars.size() + nameChars);
 }
 
 void SceneTree::RebuildLinks()
@@ -258,6 +283,7 @@ void SceneTree::SetVisible(NodeId nodeId, bool visible)
         return;
     node.flags = visible ? (node.flags | kVisible) : (node.flags & ~kVisible);
     UpdateEffectiveVisibility(index, SubtreeEnd(index));
+    ++m_contentVersion;
     RenderChanged();
 }
 
@@ -325,6 +351,7 @@ void SceneTree::SetTransformAt(uint32_t index, const Transform& transform)
         return;
     m_items[index].transform = transform;
     ++m_transformVersion;
+    ++m_contentVersion;
     // Too many changes to patch one by one: ask consumers for one full rebuild instead.
     if (m_transformChanges.size() >= std::max<size_t>(4096, m_nodes.size()))
         RenderChanged();

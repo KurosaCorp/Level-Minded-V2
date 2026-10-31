@@ -64,7 +64,29 @@ size_t AssetCatalog::AddImported(std::string_view name, std::string_view descrip
     m_items.push_back({storedName, storedDescription, NodeKind::Mesh, mesh, halfExtents, format});
     m_sources.push_back(source);
     m_sourceKeys.push_back(SourceKey(source));
+    ++m_importVersion;
     return m_items.size() - 1;
+}
+
+size_t AssetCatalog::FindMesh(MeshId mesh) const
+{
+    for (size_t i = 0; i < m_items.size(); ++i)
+        if (IsImported(i) && m_items[i].mesh == mesh)
+            return i;
+    return npos;
+}
+
+void AssetCatalog::ResetImported()
+{
+    const size_t builtins = ItemCatalog().size();
+    m_items.resize(builtins);
+    m_sources.resize(builtins);
+    m_sourceKeys.resize(builtins);
+    m_items.shrink_to_fit();
+    m_sources.shrink_to_fit();
+    m_sourceKeys.shrink_to_fit();
+    std::deque<std::string>().swap(m_text); // only imported items keep text here
+    ++m_importVersion;
 }
 
 size_t AssetCatalog::FindSource(const std::filesystem::path& source) const

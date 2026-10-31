@@ -147,6 +147,15 @@ void AssetPanel::SetStatus(std::string text, bool isError)
     m_statusIsError = isError;
 }
 
+void AssetPanel::Reset()
+{
+    m_spawnCounts.clear();
+    m_highlight = static_cast<size_t>(-1);
+    m_scrollToHighlight = false;
+    m_status.clear();
+    m_statusIsError = false;
+}
+
 void AssetPanel::Highlight(size_t index)
 {
     m_highlight = index;

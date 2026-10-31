@@ -275,6 +275,22 @@ NodeId HierarchyPanel::ActiveGroup(const SceneTree& tree) const
     return node.parent == SceneTree::kNoIndex ? kInvalidNode : tree.NodeAt(node.parent).id;
 }
 
+void HierarchyPanel::Reset()
+{
+    m_rows.clear();
+    m_rowsLayoutVersion = ~0ull;
+    m_pendingMoves.clear();
+    m_createGroupRequested = false;
+    m_deleteRequested = false;
+    m_activeNode = kInvalidNode;
+    m_activeGroupThisFrame = kInvalidNode;
+    m_scrollToNode = kInvalidNode;
+    m_renamingNode = kInvalidNode;
+    m_renameNeedsFocus = false;
+    m_renameBuffer[0] = '\0';
+    m_newGroupCounter = 1;
+}
+
 void HierarchyPanel::Reveal(SceneTree& tree, NodeId node)
 {
     const uint32_t index = tree.IndexOf(node);

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <utility>
 
 namespace lm {
 
@@ -14,6 +15,29 @@ MeshLibrary::MeshLibrary()
     m_meshes.resize(kBuiltinMeshCount);
     for (uint32_t mesh = 0; mesh < kBuiltinMeshCount; ++mesh)
         m_meshes[mesh].range = geometry.ranges[mesh];
+}
+
+void MeshLibrary::Reset()
+{
+    const uint64_t version = m_version;
+    const uint64_t generation = m_generation;
+    MeshLibrary fresh; // new, right-sized arrays; the old ones (and their capacity) are freed
+    std::swap(*this, fresh);
+    m_version = version + 1;
+    m_generation = generation + 1;
+}
+
+MeshId MeshLibrary::AddCopy(MeshId source)
+{
+    const Mesh& mesh = Get(source);
+    if (mesh.range.indexCount == 0)
+        return MeshId::None;
+    // Copy out first: Add appends to the arrays the spans would point into.
+    const std::vector<MeshVertex> vertices(m_vertices.begin() + mesh.range.baseVertex,
+                                           m_vertices.begin() + mesh.range.baseVertex + mesh.range.vertexCount);
+    const std::vector<uint32_t> indices(m_indices.begin() + mesh.range.firstIndex,
+                                        m_indices.begin() + mesh.range.firstIndex + mesh.range.indexCount);
+    return Add(vertices, indices, mesh.traits);
 }
 
 MeshId MeshLibrary::Add(std::span<const MeshVertex> vertices, std::span<const uint32_t> indices, uint8_t traits)

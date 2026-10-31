@@ -36,9 +36,11 @@ build\release\bin\LevelMinded.exe --stress 100000 --bench 300 --bench-out bench.
 with a mass-select toggle every frame, then N frames moving one item every frame), writes per-zone CPU times, allocations/frame, GPU upload/frame,
 state changes and memory to the report, and exits. The F1 overlay shows the same numbers live
 ("Profiler" section). Run it before and after performance work and compare.
-`--import PATH` (repeatable) imports a model at startup through the same path as drag & drop.
+`--import PATH` (repeatable) imports a model at startup through the same path as drag & drop; `--map PATH` loads a map.
 Output: `build/<preset>/bin/LevelMinded.exe`. Dear ImGui, cgltf and fast_obj are fetched by CMake (pinned tag + SHA256
 in `cmake/Dependencies.cmake`); the two loaders build as the C library `lm_loaders` (the project enables C for it).
+simdjson's single-header amalgamation is downloaded with checksums (`lm_download_checked`) into `lm_simdjson`
+(no exceptions, AVX2 + fallback kernels only); only `src/scene/MapFile.cpp` includes the 10 MB header.
 
 ## Layout
 
@@ -56,12 +58,13 @@ in `cmake/Dependencies.cmake`); the two loaders build as the C library `lm_loade
 - `src/scene/SceneTree.*` - hierarchy of groups/items with per-item transform + half extents + mesh
 - `src/scene/Transform.h` - TRS transform, `ItemMatrix`, gizmo operations (`Translated`, `RotatedAbout`, `ScaledAbout`)
 - `src/scene/Picking.*` - `ScenePicker`: ray vs exact mesh triangles of visible items (click selection)
+- `src/scene/MapFile.*` - .lmmap save (hand-written JSON) / load (simdjson, two-phase, all-or-nothing)
 - `src/scene/ItemCatalog.*` - built-in item types, `AssetCatalog` (built-in + imported items), `SpawnCatalogItem`
 - `src/scene/MockLevel.*` - sample level used until real level loading exists
 - `src/editor/HierarchyPanel.*` - left dock panel: tree view, selection, eye toggles, drag & drop, active group
 - `src/editor/AssetPanel.*` - right dock panel: catalog tiles, import status line; click spawns into the active group
 - `src/editor/NodeStyle.h` - per-kind colors shared by panels and viewport
-- `tests/SceneTreeTests.cpp` - unit tests (tree, catalog, mesh winding, transforms, picking, import) + benchmark (`LevelMindedTests`)
+- `tests/SceneTreeTests.cpp` - unit tests (tree, catalog, mesh winding, transforms, picking, import, maps) + benchmark (`LevelMindedTests`)
 - Static lib `levelminded_core` = `src/scene/*` + `src/import/*` + `MeshGeometry`/`MeshLibrary` (no UI/GPU deps)
 - `src/editor/EditorCamera.*` - orbit/pan/dolly/fly camera math
 - `src/editor/Viewport.*` - camera input, click selection, gizmo toolbar + shortcuts, keyboard focus, orientation axes
@@ -127,6 +130,16 @@ in `cmake/Dependencies.cmake`); the two loaders build as the C library `lm_loade
 - Scene names live in one shared character buffer (`SceneTree::NameAt` returns a `string_view` that is
   only valid until the next edit). Don't hold it across edits.
 - Bind pipeline state in `ViewportRenderer` through `m_state` (the `StateCache`), never directly.
+- Map format: bump `kMapFormatVersion` for incompatible changes and keep loading older versions. Floats are
+  written with `std::to_chars` (shortest) and read with `from_chars(float)` from the raw token, so maps
+  round-trip bit for bit; the tests require load + save to reproduce the file byte for byte.
+- Anything that a map saves must bump `SceneTree::ContentVersion()` when it changes (drives the `*`
+  unsaved-changes marker and prompts). Selection and expand/collapse deliberately don't.
+- Loading replaces the scene: `SceneTree::Clear` (frees memory), `MeshLibrary::Reset` (renderer re-uploads
+  on `Generation()` change), `AssetCatalog::ResetImported`, then `HierarchyPanel::Reset` / `AssetPanel::Reset`.
+  Anything new that caches NodeIds or palette indices needs a reset there too.
+- After every modal OS dialog (file dialogs, message boxes) call `App::AfterModalDialog()`: key-ups that
+  happen while it is open never reach ImGui, so shortcuts would get stuck otherwise.
 - Model files are opened through the loaders' file callbacks with `_wfopen_s` on UTF-8 paths (non-ASCII
   paths must keep working). Modal OS dialogs open between frames (`App::m_openImportDialog`), never
   while an ImGui frame is being built.

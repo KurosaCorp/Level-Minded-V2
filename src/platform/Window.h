@@ -19,6 +19,8 @@ public:
     virtual void OnWindowLiveResize() = 0;
     // Files dragged from Explorer and dropped onto the window (full paths).
     virtual void OnFilesDropped(std::span<const std::wstring> paths) = 0;
+    // The user asked to close the window (title bar X, Alt+F4). Return false to keep it open.
+    virtual bool OnWindowCloseRequested() = 0;
 
 protected:
     virtual ~WindowEventHandler() = default;

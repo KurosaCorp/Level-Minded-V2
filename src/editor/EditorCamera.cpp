@@ -85,6 +85,11 @@ void EditorCamera::Pan(float dxPixels, float dyPixels, float viewportHeightPixel
     XMStoreFloat3(&m_target, XMVectorAdd(XMLoadFloat3(&m_target), offset));
 }
 
+void EditorCamera::SetDistance(float distance)
+{
+    m_distance = std::clamp(distance, kMinDistance, kMaxDistance);
+}
+
 void EditorCamera::FrameSphere(float radius)
 {
     // Distance at which the sphere fills ~80% of the vertical field of view.

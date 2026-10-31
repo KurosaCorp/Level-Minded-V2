@@ -1,10 +1,10 @@
 # LevelMinded
 
-**LevelMinded is a lightweight, extremely optimized 3D map design tool for Windows.** It gives level designers a fast 3D viewport, a group-based hierarchy for organizing a map, and a palette of placeable items, in a single portable executable of about 1.2 MB that uses almost no CPU while you are not interacting with it.
+**LevelMinded is a lightweight, extremely optimized 3D map design tool for Windows.** It gives level designers a fast 3D viewport, a group-based hierarchy for organizing a map, and a palette of placeable items, in a single portable executable of about 1.5 MB that uses almost no CPU while you are not interacting with it.
 
 ![LevelMinded overview](docs/overview.png)
 
-> **Status:** v1.0 is the first public release, focused on the core editor: viewport, hierarchy and asset palette. Click selection, move / rotate / scale tools and model importing (glTF and OBJ) are now on `main`. Mod support is next (see [Roadmap](#roadmap)).
+> **Status:** v1.0 is the first public release, focused on the core editor: viewport, hierarchy and asset palette. Click selection, move / rotate / scale tools, model importing (glTF and OBJ) and saving / loading maps are now on `main`. Mod support is next (see [Roadmap](#roadmap)).
 
 ## Contents
 
@@ -14,6 +14,7 @@
 - [Center: 3D Viewport](#center-3d-viewport)
 - [Left Panel: Hierarchy](#left-panel-hierarchy)
 - [Right Panel: Assets](#right-panel-assets)
+- [Saving and Loading Maps](#saving-and-loading-maps)
 - [Stats Overlay](#stats-overlay)
 - [Performance](#performance)
 - [Known Limitations](#known-limitations)
@@ -30,6 +31,7 @@
 - **Click to select, drag to transform:** click any item in the 3D view to select it, then move, rotate or scale it with an on-screen gizmo (W / E / R), with optional snapping.
 - **Group hierarchy:** nest items in groups, select a whole group with one click, hide and show entire groups, and reorganize everything with drag and drop.
 - **Asset palette:** click an item to place it straight into the group you are working in.
+- **Save and load maps:** readable JSON map files that bring back every group, item, transform, visibility setting and imported model exactly as you left them.
 - **Bring your own models:** drag `.gltf`, `.glb` or `.obj` files onto the window (or use **File > Import Asset**) and they join the palette, at their real size and orientation.
 - **Built to scale:** stays smooth with 100,000+ items in a map.
 
@@ -56,6 +58,7 @@ There is nothing to install. The folder contains only:
 | `THIRD_PARTY_LICENSE_DearImGui.txt` | License of the Dear ImGui library used for the interface |
 | `THIRD_PARTY_LICENSE_cgltf.txt` | License of the cgltf library used to read glTF models |
 | `THIRD_PARTY_LICENSE_fast_obj.txt` | License of the fast_obj library used to read OBJ models |
+| `THIRD_PARTY_LICENSE_simdjson.txt` | License of the simdjson library used to read map files |
 
 To remove LevelMinded, delete the folder. It does not write settings, registry entries or files anywhere else.
 
@@ -255,6 +258,45 @@ How models are placed:
 - **One mesh per file.** All parts of a model are merged into a single mesh, so it is placed, selected and transformed as one item.
 - **Importing the same file twice** just highlights the existing tile. A different file with the same name gets a numbered name (`Chair (2)`).
 
+## Saving and Loading Maps
+
+Maps are saved as `.lmmap` files from the **File** menu:
+
+| Command | Shortcut | What it does |
+|---|---|---|
+| **Load...** | **Ctrl + O** | Opens a map. The current map is replaced completely. |
+| **Save** | **Ctrl + S** | Saves to the current file (the first save of a new map asks for a name). |
+| **Save As...** | **Ctrl + Shift + S** | Saves under a new name. |
+
+- **What is saved:** every group and item with its position in the hierarchy, its name, position, rotation, scale and size, which built-in shape or imported model it shows, its visibility, which groups are expanded, the imported models in the palette, and the camera view. The selection is not saved.
+- **Exact:** loading a map brings everything back exactly as it was saved, down to the last bit of every number, in both the 3D viewport and the Hierarchy.
+- **Unsaved changes:** the title bar shows the map name with a `*` when it has unsaved changes. Loading another map or closing LevelMinded asks first whether to save them.
+- **Safe saving:** a map is written to a temporary file first and then swapped in, so a failed save never damages the previous version.
+- **Safe loading:** a map is checked completely before anything changes. If it can't be loaded (for example a damaged file), a message explains why and the current map stays as it was. Loading frees all memory of the previous map.
+- **Imported models** are referenced by file path, not copied into the map. Keep them next to the map (paths are stored relative to the map file, with the absolute path as a fallback). If a model file can't be found when loading, its items are shown as boxes of the right size and a message lists the missing files; saving again keeps the reference, so they reappear once the file is back.
+
+Map files are plain UTF-8 JSON with one item per line, so they are readable and work well with version control:
+
+```json
+{
+  "format": "LevelMinded map",
+  "version": 1,
+  "camera": {"target": [0, 0, 0], "yaw": -1.0471976, "pitch": 0.5235988, "distance": 34},
+  "assets": [
+    {"name": "teapot", "format": "OBJ", "path": "models/teapot.obj", "absolutePath": "C:/Maps/models/teapot.obj", "halfExtents": [3.217, 2, 1.575]}
+  ],
+  "nodes": [
+    {"type": "group", "name": "World", "children": [
+      {"type": "brush", "name": "Floor_01", "mesh": "cube", "position": [0, 0, -0.1], "halfExtents": [12, 10, 0.1]},
+      {"type": "mesh", "name": "teapot_01", "asset": 0, "position": [4.4588947, 0, 1.575], "rotation": [0, 0, 0.38268343, 0.9238795], "halfExtents": [3.217, 2, 1.575]}
+    ]},
+    {"type": "group", "name": "Lighting", "visible": false, "children": []}
+  ]
+}
+```
+
+Rotations are quaternions (x, y, z, w), sizes are half extents in meters, and settings that have their default value (visible, expanded, no rotation, scale 1) are left out.
+
 ## Stats Overlay
 
 ![Stats Overlay](docs/stats-overlay.png)
@@ -279,7 +321,7 @@ LevelMinded is built around a few principles:
 - **Exact, fast click selection.** A click tests the real shape of each item (not just its bounding box), after a cheap bounding-sphere check that rules out almost everything.
 - **No allocations per frame.** A normal frame makes zero heap allocations.
 
-On the development machine, with a test map of 100,000 items, moving the camera costs about **0.35 ms** of CPU time per frame, dragging an item about **0.4 ms**, and a click selection about **0.5 ms**. Importing the seven test models used during development (17 MB of glTF and OBJ files, including a 69,451-triangle scan) takes under **50 ms** in total.
+On the development machine, with a test map of 100,000 items, moving the camera costs about **0.35 ms** of CPU time per frame, dragging an item about **0.4 ms**, and a click selection about **0.5 ms**. Importing the seven test models used during development (17 MB of glTF and OBJ files, including a 69,451-triangle scan) takes under **50 ms** in total. Saving that 100,000-item map (13.7 MB) takes about **55 ms**, and loading it about **100 ms**, with no memory growth over repeated loads.
 
 You can measure it on your own machine with the built-in benchmark:
 
@@ -289,6 +331,7 @@ You can measure it on your own machine with the built-in benchmark:
 | `--bench N` | Runs a scripted benchmark (N frames each of: camera orbit, mass selection, moving an item), writes a report and exits |
 | `--bench-out PATH` | Where to write the report (default: `bench.txt`) |
 | `--import PATH` | Imports a model into the palette at startup (can be repeated) |
+| `--map PATH` | Loads a map at startup |
 
 ```bat
 LevelMinded.exe --stress 100000 --bench 300
@@ -298,17 +341,15 @@ LevelMinded.exe --stress 100000 --bench 300
 
 v1.0 is the foundation release. Please be aware that:
 
-- **Maps cannot be saved or loaded yet.** LevelMinded starts with the sample level, and changes are lost when you close it.
 - New items are always placed at the origin; move them into place with the gizmo.
 - There is no box (drag-rectangle) selection in the viewport yet.
 - There is no undo/redo yet.
-- **Imported models:** textures, animations and skinning are not imported (models show their material base colors), and Draco-compressed glTF files are not supported. Imported models are not remembered after you close LevelMinded (there is no saving yet).
+- **Imported models:** textures, animations and skinning are not imported (models show their material base colors), and Draco-compressed glTF files are not supported. Maps refer to imported model files by path, so moving or deleting those files breaks the link (the items then show as boxes until the files are back).
 - Windows only.
 
 ## Roadmap
 
 - **Mod support:** extend LevelMinded with plug-ins and add-ons (see section 3 of the [License](#license)).
-- Saving and loading maps.
 - Undo/redo.
 - Textures for imported models.
 
@@ -316,7 +357,7 @@ v1.0 is the foundation release. Please be aware that:
 
 You only need this if you want to work on LevelMinded itself.
 
-**Requirements:** Windows 10/11 and [Visual Studio 2022 or later](https://visualstudio.microsoft.com/) with the **"Desktop development with C++"** workload. CMake and Ninja are included with that workload. Dear ImGui, cgltf and fast_obj are downloaded automatically during the first build.
+**Requirements:** Windows 10/11 and [Visual Studio 2022 or later](https://visualstudio.microsoft.com/) with the **"Desktop development with C++"** workload. CMake and Ninja are included with that workload. Dear ImGui, cgltf, fast_obj and simdjson are downloaded automatically during the first build.
 
 ```bat
 git clone https://github.com/KurosaCorp/Level-Minded-V2.git
@@ -333,17 +374,18 @@ cd Level-Minded-V2
 
 The scripts find Visual Studio automatically, so no Developer Command Prompt is needed.
 
-**Technology:** C++20, CMake, Direct3D 11, [Dear ImGui](https://github.com/ocornut/imgui) (docking branch), [cgltf](https://github.com/jkuhlmann/cgltf) and [fast_obj](https://github.com/thisistherk/fast_obj).
+**Technology:** C++20, CMake, Direct3D 11, [Dear ImGui](https://github.com/ocornut/imgui) (docking branch), [cgltf](https://github.com/jkuhlmann/cgltf), [fast_obj](https://github.com/thisistherk/fast_obj) and [simdjson](https://github.com/simdjson/simdjson).
 
 ## Third-Party Software
 
-LevelMinded uses these libraries, all licensed under the MIT License. Their license texts are included in the release package.
+LevelMinded uses these libraries, all licensed under the MIT License (simdjson is dual-licensed Apache 2.0 / MIT and is used under MIT). Their license texts are included in the release package.
 
 | Library | Used for | License file |
 |---|---|---|
 | [Dear ImGui](https://github.com/ocornut/imgui) by Omar Cornut | The user interface | `THIRD_PARTY_LICENSE_DearImGui.txt` |
 | [cgltf](https://github.com/jkuhlmann/cgltf) by Johannes Kuhlmann | Reading glTF models | `THIRD_PARTY_LICENSE_cgltf.txt` |
 | [fast_obj](https://github.com/thisistherk/fast_obj) by Richard Knight | Reading OBJ models | `THIRD_PARTY_LICENSE_fast_obj.txt` |
+| [simdjson](https://github.com/simdjson/simdjson) by the simdjson authors | Reading map files | `THIRD_PARTY_LICENSE_simdjson.txt` |
 
 ## License
 
