@@ -1,0 +1,39 @@
+LevelMinded @PROJECT_VERSION@
+============================
+
+Optimized 3D map design tool.
+
+Run LevelMinded.exe. No installation needed; nothing else is required in this folder.
+
+Requirements
+------------
+- Windows 10 or 11, 64-bit
+- A GPU with Direct3D 11 support
+- @LM_CPU_REQUIREMENT@
+
+Viewport controls
+-----------------
+Alt + left drag        Orbit
+Middle drag            Pan
+Alt + right drag       Zoom (also: mouse wheel)
+Right drag + W/A/S/D   Fly (Q/E down/up, Shift faster, wheel sets fly speed)
+F / Home               Focus origin / reset view
+Numpad 1 / 3 / 7       Front / right / top view (Ctrl: opposite side)
+F1                     Show / hide the stats overlay
+
+Panels
+------
+Hierarchy (left)  Click a group to select everything inside it; the eye icon hides a group and its
+                  contents; drag rows to reorder or move them into groups; double-click or F2 renames.
+Assets (right)    Click an item to place it at the origin, inside the active Hierarchy group
+                  (shown at the top of the panel).
+
+Command line (testing)
+----------------------
+--stress N         Add N items to the sample level
+--bench N          Run the built-in benchmark (N frames per phase), write bench.txt, exit
+--bench-out PATH   Benchmark report location
+
+Third-party software
+--------------------
+Dear ImGui (MIT license), see THIRD_PARTY_LICENSE_DearImGui.txt.

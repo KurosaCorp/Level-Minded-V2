@@ -24,6 +24,9 @@ target_include_directories(imgui SYSTEM PUBLIC
 target_compile_definitions(imgui PUBLIC
     IMGUI_DISABLE_OBSOLETE_FUNCTIONS
     IMGUI_IMPL_WIN32_DISABLE_GAMEPAD) # no gamepad UI navigation: skip XInput polling every frame
+if(LM_SHIP_BUILD)
+    target_compile_definitions(imgui PUBLIC IMGUI_DISABLE_DEMO_WINDOWS IMGUI_DISABLE_DEBUG_TOOLS)
+endif()
 
 # The DX11 backend compiles its shaders at startup through d3dcompiler_47.dll (ships with Windows 10+).
 target_link_libraries(imgui PUBLIC d3d11 dxgi d3dcompiler)

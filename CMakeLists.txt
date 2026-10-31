@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(LevelMinded
-    VERSION 0.1.0
+    VERSION 1.0.0
     DESCRIPTION "Optimized 3D map design tool"
     LANGUAGES CXX)
 
@@ -38,6 +38,19 @@ add_library(levelminded_core STATIC
 target_include_directories(levelminded_core PUBLIC src)
 lm_apply_project_warnings(levelminded_core)
 
+# Version-stamped resources, generated from res/*.in.
+set(LM_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+if(LM_ENABLE_AVX2)
+    set(LM_CPU_REQUIREMENT "A 64-bit CPU with AVX2 (Intel Haswell / AMD Excavator, 2013, or newer)")
+else()
+    set(LM_CPU_REQUIREMENT "Any 64-bit x86 CPU")
+endif()
+configure_file(res/LevelMinded.manifest.in "${LM_GENERATED_DIR}/LevelMinded.manifest" @ONLY)
+configure_file(res/LevelMinded.rc.in "${LM_GENERATED_DIR}/LevelMinded.rc" @ONLY)
+configure_file(res/README.txt.in "${LM_GENERATED_DIR}/README.txt" @ONLY NEWLINE_STYLE CRLF)
+# "1.0" for the package folder name (read by build_release.bat).
+file(WRITE "${CMAKE_BINARY_DIR}/package_version.txt" "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}")
+
 add_executable(LevelMinded WIN32
     src/main.cpp
     src/app/App.cpp
@@ -71,7 +84,8 @@ add_executable(LevelMinded WIN32
     src/render/shaders/Grid.hlsl
     src/render/shaders/Lines.hlsl
     src/render/shaders/Mesh.hlsl
-    res/LevelMinded.manifest
+    "${LM_GENERATED_DIR}/LevelMinded.manifest"
+    "${LM_GENERATED_DIR}/LevelMinded.rc"
 )
 # Keep the .hlsl files visible in IDEs without MSBuild trying to compile them.
 set_source_files_properties(
@@ -91,7 +105,7 @@ target_include_directories(LevelMinded PRIVATE src)
 target_link_libraries(LevelMinded PRIVATE levelminded_core imgui d3d11 dxgi dwmapi shell32)
 target_compile_definitions(LevelMinded PRIVATE
     LM_VERSION_STRING="${PROJECT_VERSION}"
-    LM_BUILD_CONFIG="$<CONFIG>")
+    LM_BUILD_CONFIG="$<IF:$<BOOL:${LM_SHIP_BUILD}>,Release build,$<CONFIG>>")
 lm_apply_project_warnings(LevelMinded)
 
 set_target_properties(LevelMinded PROPERTIES
@@ -105,3 +119,10 @@ target_link_libraries(LevelMindedTests PRIVATE levelminded_core)
 lm_apply_project_warnings(LevelMindedTests)
 set_target_properties(LevelMindedTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_test(NAME SceneTree COMMAND LevelMindedTests)
+
+# ---- Release package (`cmake --install <build dir> --prefix <folder>`, used by build_release.bat).
+# The exe has no runtime dependencies beyond Windows itself (static CRT; D3D11, DXGI, d3dcompiler_47
+# ship with Windows 10+), and shaders are compiled into it, so it is the only binary in the package.
+install(TARGETS LevelMinded RUNTIME DESTINATION .)
+install(FILES "${LM_GENERATED_DIR}/README.txt" DESTINATION .)
+install(FILES "${imgui_SOURCE_DIR}/LICENSE.txt" DESTINATION . RENAME THIRD_PARTY_LICENSE_DearImGui.txt)

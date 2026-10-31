@@ -15,11 +15,18 @@
     },
     { "name": "debug",   "displayName": "Debug",                      "inherits": "base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
     { "name": "release", "displayName": "Release (optimized)",        "inherits": "base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
-    { "name": "profile", "displayName": "Profile (optimized + PDB)",  "inherits": "base", "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" } }
+    { "name": "profile", "displayName": "Profile (optimized + PDB)",  "inherits": "base", "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" } },
+    {
+      "name": "dist",
+      "displayName": "Distribution (Release, shipping options)",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "LM_SHIP_BUILD": "ON" }
+    }
   ],
   "buildPresets": [
     { "name": "debug",   "configurePreset": "debug" },
     { "name": "release", "configurePreset": "release" },
-    { "name": "profile", "configurePreset": "profile" }
+    { "name": "profile", "configurePreset": "profile" },
+    { "name": "dist",    "configurePreset": "dist" }
   ]
 }

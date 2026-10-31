@@ -14,6 +14,18 @@ Optimized 3D map design tool. C++20, CMake + Ninja, MSVC, Win32 + Direct3D 11, D
 
 `build.ps1` loads the MSVC environment itself (via vswhere + vcvars64), so no Developer Prompt is needed.
 
+## Release package
+
+```bat
+build_release.bat
+```
+
+Clean "dist" preset build (Release + `LM_SHIP_BUILD`: ImGui demo/debug tools compiled out), runs the tests,
+verifies the exe (GUI subsystem, no PDB record, only Windows system DLLs), then `cmake --install`s it into
+`dist\LevelMinded_v<major>.<minor>\` (exe, README, Dear ImGui license) and zips it. The version comes from
+`project(VERSION)` in `CMakeLists.txt`; README, manifest and the version resource are generated from `res/*.in`.
+The exe must stay self-contained: static CRT, shaders compiled in, no files loaded at startup.
+
 ## Profiling
 
 ```powershell

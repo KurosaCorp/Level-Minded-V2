@@ -70,8 +70,10 @@ void DebugOverlay::Draw(const FrameStats& stats, const OverlayInfo& info, Viewpo
             ImGui::Checkbox("Grid", &settings.showGrid);
             ImGui::SameLine();
             ImGui::Checkbox("Axes", &settings.showAxes);
+#ifndef IMGUI_DISABLE_DEMO_WINDOWS
             ImGui::SameLine();
             ImGui::Checkbox("ImGui demo", &m_showDemoWindow);
+#endif
             if (ImGui::TreeNodeEx("Controls", ImGuiTreeNodeFlags_NoTreePushOnOpen)) {
                 ImGui::TextDisabled("Alt+LMB orbit   MMB pan   Alt+RMB / wheel zoom");
                 ImGui::TextDisabled("RMB + WASD/QE fly (Shift fast, wheel speed)");
@@ -83,8 +85,10 @@ void DebugOverlay::Draw(const FrameStats& stats, const OverlayInfo& info, Viewpo
         ImGui::End();
     }
 
+#ifndef IMGUI_DISABLE_DEMO_WINDOWS
     if (m_showDemoWindow)
         ImGui::ShowDemoWindow(&m_showDemoWindow);
+#endif
 }
 
 } // namespace lm
