@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/DebugOverlay.h"
+#include "core/Profiler.h"
 #include "editor/AssetPanel.h"
 #include "editor/HierarchyPanel.h"
 #include "editor/Viewport.h"
@@ -9,9 +10,18 @@
 #include "render/ViewportRenderer.h"
 #include "scene/SceneTree.h"
 
+#include <array>
+#include <string>
+
 typedef unsigned int ImGuiID;
 
 namespace lm {
+
+struct AppOptions {
+    uint32_t stressItems = 0;              // --stress N: add N items to the mock level
+    uint32_t benchFrames = 0;              // --bench N: run the benchmark script (N frames per phase), then exit
+    std::wstring benchOutput = L"bench.txt"; // --bench-out PATH
+};
 
 // Owns the window, GPU device and UI, and runs the event-driven main loop.
 //
@@ -24,12 +34,30 @@ public:
     App() = default;
     ~App() override;
 
-    bool Init();
+    bool Init(const AppOptions& options = {});
     int Run();
 
 private:
+    // Accumulated per-zone CPU times for one benchmark phase.
+    struct BenchPhase {
+        const char* name = "";
+        uint32_t frames = 0;
+        std::array<double, static_cast<size_t>(Zone::Count)> sumMs{};
+        std::array<double, static_cast<size_t>(Zone::Count)> maxMs{};
+        uint64_t heapAllocations = 0;
+        uint64_t imguiAllocations = 0;
+        uint64_t bytesUploaded = 0;
+        uint32_t drawCalls = 0;
+        uint32_t sceneRebuilds = 0;
+        uint32_t stateChangesIssued = 0;
+        uint32_t stateChangesSkipped = 0;
+    };
+
     void Shutdown();
     void RenderFrame();
+    void BenchBeforeFrame();
+    void BenchAfterFrame(uint64_t heapAllocations, uint64_t imguiAllocations);
+    void WriteBenchReport() const;
     void BuildDefaultLayout(ImGuiID dockspaceId);
     void ApplyStyle(float dpiScale);
     void MarkActive();
@@ -56,6 +84,12 @@ private:
     uint32_t m_pendingWidth = 0;
     uint32_t m_pendingHeight = 0;
     double m_activeUntil = 0.0; // keep rendering until this time (Clock::Now seconds)
+
+    AppOptions m_options;
+    bool m_quitRequested = false;
+    uint32_t m_benchFrame = 0;
+    NodeId m_benchToggleGroup = kInvalidNode;
+    std::array<BenchPhase, 2> m_benchPhases{};
 };
 
 } // namespace lm

@@ -86,11 +86,15 @@ void HierarchyPanel::Draw(SceneTree& tree, float dpiScale)
     m_activeGroupThisFrame = ActiveGroup(tree);
 
     // ---- Rows that are not inside a collapsed group. Collapsed subtrees are skipped in O(1).
-    m_rows.clear();
-    for (uint32_t i = 0; i < tree.Size();) {
-        m_rows.push_back(i);
-        const SceneTree::Node& node = tree.NodeAt(i);
-        i = (node.IsGroup() && !node.Has(SceneTree::kExpanded)) ? tree.SubtreeEnd(i) : i + 1;
+    // Rebuilt only when the tree's layout (structure or expand state) changed.
+    if (m_rowsLayoutVersion != tree.LayoutVersion()) {
+        m_rows.clear();
+        for (uint32_t i = 0; i < tree.Size();) {
+            m_rows.push_back(i);
+            const SceneTree::Node& node = tree.NodeAt(i);
+            i = (node.IsGroup() && !node.Has(SceneTree::kExpanded)) ? tree.SubtreeEnd(i) : i + 1;
+        }
+        m_rowsLayoutVersion = tree.LayoutVersion();
     }
 
     const float footerHeight = ImGui::GetFrameHeightWithSpacing();
@@ -179,7 +183,8 @@ void HierarchyPanel::DrawRow(SceneTree& tree, uint32_t index, float dpiScale)
 
     if (ImGui::BeginDragDropSource()) {
         ImGui::SetDragDropPayload(kPayloadType, &id, sizeof(id));
-        ImGui::Text("%s", tree.NameAt(index).c_str());
+        const std::string_view name = tree.NameAt(index);
+        ImGui::TextUnformatted(name.data(), name.data() + name.size());
         ImGui::EndDragDropSource();
     }
 
@@ -211,7 +216,8 @@ void HierarchyPanel::DrawRow(SceneTree& tree, uint32_t index, float dpiScale)
             m_renamingNode = kInvalidNode;
     } else {
         const ImU32 textColor = ImGui::GetColorU32(visible ? ImGuiCol_Text : ImGuiCol_TextDisabled);
-        drawList->AddText(ImVec2(textX, rowCenterY - fontSize * 0.5f), textColor, tree.NameAt(index).c_str());
+        const std::string_view name = tree.NameAt(index);
+        drawList->AddText(ImVec2(textX, rowCenterY - fontSize * 0.5f), textColor, name.data(), name.data() + name.size());
     }
 
     HandleDropTarget(tree, index, rowMin, rowMax, labelX);
@@ -349,7 +355,8 @@ void HierarchyPanel::BeginRename(const SceneTree& tree, NodeId id)
     const uint32_t index = tree.IndexOf(id);
     if (index == SceneTree::kNoIndex)
         return;
-    std::snprintf(m_renameBuffer, sizeof(m_renameBuffer), "%s", tree.NameAt(index).c_str());
+    const std::string_view name = tree.NameAt(index);
+    std::snprintf(m_renameBuffer, sizeof(m_renameBuffer), "%.*s", static_cast<int>(name.size()), name.data());
     m_renamingNode = id;
     m_renameNeedsFocus = true;
 }

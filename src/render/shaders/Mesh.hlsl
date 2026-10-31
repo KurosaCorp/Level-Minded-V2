@@ -62,3 +62,9 @@ float4 PSMain(VSOut input) : SV_Target
     }
     return float4(color, 1.0);
 }
+
+// Unlit instance color, for instanced wireframes (selection outlines) drawn with the same vertex shader.
+float4 WirePSMain(VSOut input) : SV_Target
+{
+    return float4(input.color, 1.0);
+}

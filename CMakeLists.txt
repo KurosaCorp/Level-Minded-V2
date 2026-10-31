@@ -44,7 +44,10 @@ add_executable(LevelMinded WIN32
     src/app/App.h
     src/app/DebugOverlay.cpp
     src/app/DebugOverlay.h
+    src/core/AllocationCounter.cpp
+    src/core/AllocationCounter.h
     src/core/Clock.h
+    src/core/Profiler.h
     src/core/Rect.h
     src/editor/AssetPanel.cpp
     src/editor/AssetPanel.h
@@ -61,6 +64,7 @@ add_executable(LevelMinded WIN32
     src/render/GpuDevice.h
     src/render/LineBatch.cpp
     src/render/LineBatch.h
+    src/render/StateCache.h
     src/render/ViewportRenderer.cpp
     src/render/ViewportRenderer.h
     src/render/shaders/Common.hlsli
@@ -81,9 +85,10 @@ lm_add_shader(LevelMinded src/render/shaders/Lines.hlsl VSMain vs_5_0 g_LineVS)
 lm_add_shader(LevelMinded src/render/shaders/Lines.hlsl PSMain ps_5_0 g_LinePS)
 lm_add_shader(LevelMinded src/render/shaders/Mesh.hlsl  VSMain vs_5_0 g_MeshVS)
 lm_add_shader(LevelMinded src/render/shaders/Mesh.hlsl  PSMain ps_5_0 g_MeshPS)
+lm_add_shader(LevelMinded src/render/shaders/Mesh.hlsl  WirePSMain ps_5_0 g_WirePS)
 
 target_include_directories(LevelMinded PRIVATE src)
-target_link_libraries(LevelMinded PRIVATE levelminded_core imgui d3d11 dxgi dwmapi)
+target_link_libraries(LevelMinded PRIVATE levelminded_core imgui d3d11 dxgi dwmapi shell32)
 target_compile_definitions(LevelMinded PRIVATE
     LM_VERSION_STRING="${PROJECT_VERSION}"
     LM_BUILD_CONFIG="$<CONFIG>")

@@ -2,6 +2,7 @@
 
 #include "scene/SceneTree.h"
 
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -84,6 +85,30 @@ void BuildMockLevel(SceneTree& tree)
     const NodeId unsorted = tree.CreateGroup("Unsorted");
     for (int i = 0; i < 3; ++i)
         tree.CreateItem(Numbered("Debris", i + 1), NodeKind::Brush, Box(16.0f + float(i) * 1.5f, -3.0f, 0.25f, 0.5f, 0.4f, 0.25f), unsorted);
+}
+
+void BuildStressLevel(SceneTree& tree, uint32_t itemCount)
+{
+    constexpr uint32_t kBlockSize = 100;
+    constexpr float kSpacing = 2.5f;
+    const auto side = static_cast<uint32_t>(std::ceil(std::sqrt(double(itemCount))));
+    const NodeId stress = tree.CreateGroup("Stress");
+
+    char name[48];
+    NodeId block = kInvalidNode;
+    for (uint32_t i = 0; i < itemCount; ++i) {
+        if (i % kBlockSize == 0) {
+            std::snprintf(name, sizeof(name), "Block_%05u", i / kBlockSize);
+            block = tree.CreateGroup(name, stress);
+        }
+        const float x = 30.0f + float(i % side) * kSpacing;
+        const float y = -float(side) * kSpacing * 0.5f + float(i / side) * kSpacing;
+        // Names longer than the small-string buffer on purpose: real level item names often are.
+        std::snprintf(name, sizeof(name), "StressItem_%06u_Prop", i);
+        const bool cylinder = (i % 3) == 0;
+        tree.CreateItem(name, NodeKind::Mesh, Box(x, y, 0.5f, 0.5f, 0.5f, 0.5f), block,
+                        cylinder ? MeshId::Cylinder : MeshId::Cube);
+    }
 }
 
 } // namespace lm

@@ -238,6 +238,55 @@ void TestManyMoves()
     CHECK(tree.Validate());
 }
 
+void TestNamesAndVersions()
+{
+    Fixture f;
+    const uint64_t layout0 = f.tree.LayoutVersion();
+    const uint64_t render0 = f.tree.RenderVersion();
+
+    // Rename, including to a long name and to a view into the tree's own name storage.
+    f.tree.Rename(f.a1, "a_much_longer_name_than_any_small_string_buffer");
+    CHECK(f.tree.NameAt(f.tree.IndexOf(f.a1)) == "a_much_longer_name_than_any_small_string_buffer");
+    f.tree.Rename(f.a2, f.tree.NameAt(f.tree.IndexOf(f.b1))); // aliases the buffer that may grow
+    CHECK(f.tree.NameAt(f.tree.IndexOf(f.a2)) == "b1");
+    CHECK(f.tree.Validate());
+    CHECK(f.tree.Memory().nameAllocations == 1); // all names share one buffer
+    CHECK(f.tree.LayoutVersion() == layout0 && f.tree.RenderVersion() == render0); // renames don't affect either
+
+    // Expand/collapse: layout only. Selection/visibility: render only. No-op calls change nothing.
+    f.tree.SetExpanded(f.b, false);
+    CHECK(f.tree.LayoutVersion() == layout0 + 1 && f.tree.RenderVersion() == render0);
+    f.tree.SetExpanded(f.b, false);
+    CHECK(f.tree.LayoutVersion() == layout0 + 1);
+    f.tree.SetSelected(f.b, true);
+    f.tree.SetVisible(f.c, false);
+    CHECK(f.tree.RenderVersion() == render0 + 2 && f.tree.LayoutVersion() == layout0 + 1);
+    f.tree.SetSelected(f.b, true);
+    f.tree.ClearSelection();
+    f.tree.ClearSelection();
+    CHECK(f.tree.RenderVersion() == render0 + 3);
+    // Structural edits: both.
+    CHECK(f.tree.Move(f.c, f.a));
+    CHECK(f.tree.LayoutVersion() == layout0 + 2 && f.tree.RenderVersion() == render0 + 4);
+
+    // Garbage from removals/renames is reclaimed by compaction, keeping names intact.
+    SceneTree tree;
+    const NodeId group = tree.CreateGroup("G");
+    std::vector<NodeId> items;
+    for (int i = 0; i < 5000; ++i)
+        items.push_back(tree.CreateItem("Item_with_a_reasonably_long_name_" + std::to_string(i), NodeKind::Brush, {}, group));
+    const size_t charsBefore = tree.Memory().names;
+    for (int i = 0; i < 5000; i += 2)
+        tree.Remove(items[static_cast<size_t>(i)]);
+    for (int round = 0; round < 3; ++round)
+        for (int i = 1; i < 5000; i += 2)
+            tree.Rename(items[static_cast<size_t>(i)], "Renamed_item_" + std::to_string(round) + "_" + std::to_string(i));
+    CHECK(tree.Validate());
+    CHECK(tree.Memory().nameGarbage < 64 * 1024 * 2); // compaction ran
+    CHECK(tree.NameAt(tree.IndexOf(items[4999])) == "Renamed_item_2_4999");
+    CHECK(tree.Memory().names <= charsBefore * 2);
+}
+
 void TestCatalogSpawn()
 {
     const auto catalog = ItemCatalog();
@@ -322,6 +371,19 @@ void TestMeshWinding()
             std::fprintf(stderr, "mesh %u: %d bad triangles\n", m, bad);
         CHECK(bad == 0);
     }
+
+    // Wire box: 12 edges, every index inside its 8 corners, every edge axis-aligned with length 2.
+    const MeshRange& wire = geometry.wireBox;
+    CHECK(wire.indexCount == 24 && wire.vertexCount == 8);
+    for (uint32_t e = 0; e < wire.indexCount; e += 2) {
+        const uint16_t i0 = geometry.indices[wire.firstIndex + e];
+        const uint16_t i1 = geometry.indices[wire.firstIndex + e + 1];
+        CHECK(i0 < 8 && i1 < 8);
+        const auto& p0 = geometry.vertices[static_cast<size_t>(wire.baseVertex) + i0].position;
+        const auto& p1 = geometry.vertices[static_cast<size_t>(wire.baseVertex) + i1].position;
+        const float d = std::fabs(p0.x - p1.x) + std::fabs(p0.y - p1.y) + std::fabs(p0.z - p1.z);
+        CHECK(d == 2.0f);
+    }
 }
 
 template <typename F>
@@ -386,6 +448,7 @@ int main()
     TestSelection();
     TestRemove();
     TestManyMoves();
+    TestNamesAndVersions();
     TestCatalogSpawn();
     TestMeshWinding();
     Benchmark();

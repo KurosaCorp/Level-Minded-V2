@@ -7,6 +7,7 @@
 #include "g_LineVS.h"
 #include "g_MeshPS.h"
 #include "g_MeshVS.h"
+#include "g_WirePS.h"
 
 #include <cstring>
 #include <iterator>
@@ -19,9 +20,6 @@ namespace {
 
 constexpr uint32_t kGridFlagLines = 1u;
 constexpr uint32_t kGridFlagAxes = 2u;
-
-constexpr uint32_t kAxisZColor = PackRgba(66, 133, 244);
-constexpr uint32_t kAxisZBelowColor = PackRgba(66, 133, 244, 80);
 
 // Mirrors cbuffer FrameConstants in shaders/Common.hlsli.
 struct alignas(16) FrameConstants {
@@ -110,19 +108,21 @@ bool ViewportRenderer::Create(ID3D11Device* device)
     if (FAILED(device->CreateRasterizerState(&rasterDesc, &m_meshRaster)))
         return false;
 
-    return CreateMeshResources(device) && m_lines.Create(device) && m_overlayLines.Create(device);
+    return CreateMeshResources(device) && m_sceneLines.Create(device);
 }
 
 bool ViewportRenderer::CreateMeshResources(ID3D11Device* device)
 {
     if (FAILED(device->CreateVertexShader(g_MeshVS, sizeof(g_MeshVS), nullptr, &m_meshVS)) ||
         FAILED(device->CreatePixelShader(g_MeshPS, sizeof(g_MeshPS), nullptr, &m_meshPS)) ||
+        FAILED(device->CreatePixelShader(g_WirePS, sizeof(g_WirePS), nullptr, &m_wirePS)) ||
         FAILED(device->CreateInputLayout(kMeshInputLayout, static_cast<UINT>(std::size(kMeshInputLayout)), g_MeshVS,
                                          sizeof(g_MeshVS), &m_meshLayout)))
         return false;
 
     const MeshGeometry geometry = BuildBuiltinMeshes();
     std::memcpy(m_meshRanges, geometry.ranges, sizeof(m_meshRanges));
+    m_wireBoxRange = geometry.wireBox;
 
     D3D11_BUFFER_DESC desc{};
     desc.Usage = D3D11_USAGE_IMMUTABLE;
@@ -137,6 +137,14 @@ bool ViewportRenderer::CreateMeshResources(ID3D11Device* device)
     return SUCCEEDED(device->CreateBuffer(&desc, &data, &m_meshIndices));
 }
 
+void ViewportRenderer::BeginScene()
+{
+    for (auto& bucket : m_instances)
+        bucket.clear();
+    m_outlines.clear();
+    m_sceneLines.Clear();
+}
+
 void ViewportRenderer::AddMeshInstance(MeshId mesh, const XMFLOAT3& position, const XMFLOAT3& scale, uint32_t rgba,
                                        uint32_t flags)
 {
@@ -146,93 +154,87 @@ void ViewportRenderer::AddMeshInstance(MeshId mesh, const XMFLOAT3& position, co
     m_instances[bucket].push_back({position, scale, rgba, flags});
 }
 
-uint32_t ViewportRenderer::DrawMeshes(ID3D11DeviceContext* context)
+void ViewportRenderer::AddOutline(const XMFLOAT3& center, const XMFLOAT3& halfExtents, uint32_t rgba)
 {
-    // Concatenate the per-mesh buckets so every mesh type reads a contiguous instance range.
-    m_instanceUpload.clear();
-    UINT firstInstance[kMeshCount] = {};
-    for (uint32_t mesh = 0; mesh < kMeshCount; ++mesh) {
-        firstInstance[mesh] = static_cast<UINT>(m_instanceUpload.size());
-        m_instanceUpload.insert(m_instanceUpload.end(), m_instances[mesh].begin(), m_instances[mesh].end());
-    }
-    if (m_instanceUpload.empty())
-        return 0;
+    m_outlines.push_back({center, halfExtents, rgba, 0});
+}
 
-    if (m_instanceUpload.size() > m_instanceCapacity) {
+void ViewportRenderer::EndScene()
+{
+    m_sceneDirty = true;
+}
+
+bool ViewportRenderer::UploadScene(ID3D11DeviceContext* context)
+{
+    // Lay the buckets out back to back so each draw reads one contiguous instance range.
+    size_t total = 0;
+    for (uint32_t mesh = 0; mesh < kMeshCount; ++mesh) {
+        m_firstInstance[mesh] = static_cast<UINT>(total);
+        m_instanceCount[mesh] = static_cast<UINT>(m_instances[mesh].size());
+        total += m_instances[mesh].size();
+    }
+    m_firstOutline = static_cast<UINT>(total);
+    m_outlineCount = static_cast<UINT>(m_outlines.size());
+    total += m_outlines.size();
+
+    if (total > m_instanceCapacity) {
         size_t capacity = m_instanceCapacity ? m_instanceCapacity : 1024;
-        while (capacity < m_instanceUpload.size())
+        while (capacity < total)
             capacity *= 2;
         D3D11_BUFFER_DESC desc{};
-        desc.ByteWidth = static_cast<UINT>(capacity * sizeof(MeshInstance));
+        desc.ByteWidth = static_cast<UINT>(capacity * sizeof(Instance));
         desc.Usage = D3D11_USAGE_DYNAMIC;
         desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
         desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         m_instanceBuffer.Reset();
+        m_instanceCapacity = 0;
         if (FAILED(m_device->CreateBuffer(&desc, nullptr, &m_instanceBuffer)))
-            return 0;
+            return false;
         m_instanceCapacity = capacity;
     }
 
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    if (FAILED(context->Map(m_instanceBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-        return 0;
-    std::memcpy(mapped.pData, m_instanceUpload.data(), m_instanceUpload.size() * sizeof(MeshInstance));
-    context->Unmap(m_instanceBuffer.Get(), 0);
-
-    ID3D11Buffer* buffers[] = {m_meshVertices.Get(), m_instanceBuffer.Get()};
-    const UINT strides[] = {sizeof(MeshVertex), sizeof(MeshInstance)};
-    const UINT offsets[] = {0, 0};
-    context->IASetVertexBuffers(0, 2, buffers, strides, offsets);
-    context->IASetIndexBuffer(m_meshIndices.Get(), DXGI_FORMAT_R16_UINT, 0);
-    context->IASetInputLayout(m_meshLayout.Get());
-    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    context->VSSetShader(m_meshVS.Get(), nullptr, 0);
-    context->PSSetShader(m_meshPS.Get(), nullptr, 0);
-    context->RSSetState(m_meshRaster.Get());
-    context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
-    context->OMSetDepthStencilState(m_depthTestWrite.Get(), 0);
-
-    uint32_t drawCalls = 0;
-    for (uint32_t mesh = 0; mesh < kMeshCount; ++mesh) {
-        const auto count = static_cast<UINT>(m_instances[mesh].size());
-        const MeshRange& range = m_meshRanges[mesh];
-        if (count == 0 || range.indexCount == 0)
-            continue;
-        context->DrawIndexedInstanced(range.indexCount, count, range.firstIndex, range.baseVertex, firstInstance[mesh]);
-        ++drawCalls;
+    if (total > 0) {
+        // Copy each bucket straight into the mapped GPU buffer (no intermediate staging copy).
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        if (FAILED(context->Map(m_instanceBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+            return false;
+        auto* out = static_cast<Instance*>(mapped.pData);
+        for (uint32_t mesh = 0; mesh < kMeshCount; ++mesh)
+            std::memcpy(out + m_firstInstance[mesh], m_instances[mesh].data(), m_instances[mesh].size() * sizeof(Instance));
+        std::memcpy(out + m_firstOutline, m_outlines.data(), m_outlines.size() * sizeof(Instance));
+        context->Unmap(m_instanceBuffer.Get(), 0);
+        m_bytesUploaded += total * sizeof(Instance);
     }
-    for (auto& bucket : m_instances)
-        bucket.clear();
-    return drawCalls;
+
+    if (!m_sceneLines.Upload(context))
+        return false;
+    m_bytesUploaded += m_sceneLines.UploadedVertexCount() * size_t(LineBatch::kStride);
+    return true;
 }
 
-uint32_t ViewportRenderer::DrawLines(ID3D11DeviceContext* context, LineBatch& lines, ID3D11DepthStencilState* depthState)
+void ViewportRenderer::BindMeshInput(ID3D11DeviceContext* context)
 {
-    if (lines.LineCount() == 0)
-        return 0;
-    context->IASetInputLayout(m_lineLayout.Get());
-    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
-    context->VSSetShader(m_lineVS.Get(), nullptr, 0);
-    context->PSSetShader(m_linePS.Get(), nullptr, 0);
-    context->RSSetState(m_lineRaster.Get());
-    context->OMSetBlendState(m_alphaBlend.Get(), nullptr, 0xFFFFFFFF);
-    context->OMSetDepthStencilState(depthState, 0);
-    return lines.Flush(context);
+    m_state.VertexBuffers(context, m_meshVertices.Get(), sizeof(MeshVertex), m_instanceBuffer.Get(), sizeof(Instance));
+    m_state.IndexBuffer(context, m_meshIndices.Get());
+    m_state.InputLayout(context, m_meshLayout.Get());
+    m_state.VertexShader(context, m_meshVS.Get());
 }
 
 uint32_t ViewportRenderer::Render(ID3D11DeviceContext* context, const Rect& rect, const ViewportCamera& camera,
                                   const ViewportDrawSettings& settings)
 {
-    if (rect.IsEmpty()) {
-        for (auto& bucket : m_instances)
-            bucket.clear();
-        m_lines.Clear();
-        m_overlayLines.Clear();
+    m_state.Reset(); // UI rendering between frames changes state behind our back
+    m_bytesUploaded = 0;
+    if (rect.IsEmpty())
         return 0;
+
+    if (m_sceneDirty) {
+        if (!UploadScene(context))
+            return 0;
+        m_sceneDirty = false;
     }
 
     const XMMATRIX viewProj = XMMatrixMultiply(XMLoadFloat4x4(&camera.view), XMLoadFloat4x4(&camera.projection));
-
     D3D11_MAPPED_SUBRESOURCE mapped;
     if (FAILED(context->Map(m_frameConstants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
         return 0;
@@ -246,7 +248,9 @@ uint32_t ViewportRenderer::Render(ID3D11DeviceContext* context, const Rect& rect
     constants.gridFlags = (settings.showGrid ? kGridFlagLines : 0u) | (settings.showAxes ? kGridFlagAxes : 0u);
     std::memcpy(mapped.pData, &constants, sizeof(constants));
     context->Unmap(m_frameConstants.Get(), 0);
+    m_bytesUploaded += sizeof(constants);
 
+    // Per-frame bindings shared by every pass.
     const D3D11_VIEWPORT viewport{rect.x, rect.y, rect.width, rect.height, 0.0f, 1.0f};
     context->RSSetViewports(1, &viewport);
     ID3D11Buffer* constantBuffers[] = {m_frameConstants.Get()};
@@ -254,30 +258,69 @@ uint32_t ViewportRenderer::Render(ID3D11DeviceContext* context, const Rect& rect
     context->PSSetConstantBuffers(0, 1, constantBuffers);
     context->GSSetShader(nullptr, nullptr, 0);
 
-    // 1. Opaque meshes.
-    uint32_t drawCalls = DrawMeshes(context);
+    uint32_t drawCalls = 0;
+
+    // 1. Opaque meshes: one instanced draw per mesh type.
+    bool anyMesh = false;
+    for (uint32_t mesh = 1; mesh < kMeshCount; ++mesh)
+        anyMesh |= m_instanceCount[mesh] > 0;
+    if (anyMesh) {
+        BindMeshInput(context);
+        m_state.Topology(context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        m_state.PixelShader(context, m_meshPS.Get());
+        m_state.Rasterizer(context, m_meshRaster.Get());
+        m_state.Blend(context, nullptr);
+        m_state.DepthStencil(context, m_depthTestWrite.Get());
+        for (uint32_t mesh = 1; mesh < kMeshCount; ++mesh) {
+            const MeshRange& range = m_meshRanges[mesh];
+            if (m_instanceCount[mesh] == 0 || range.indexCount == 0)
+                continue;
+            context->DrawIndexedInstanced(range.indexCount, m_instanceCount[mesh], range.firstIndex, range.baseVertex,
+                                          m_firstInstance[mesh]);
+            ++drawCalls;
+        }
+    }
 
     // 2. Grid + X/Y axes: one full-viewport triangle, no vertex buffer, depth-tested against the meshes.
     if (constants.gridFlags != 0) {
-        context->IASetInputLayout(nullptr);
-        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        context->VSSetShader(m_gridVS.Get(), nullptr, 0);
-        context->PSSetShader(m_gridPS.Get(), nullptr, 0);
-        context->RSSetState(m_solidRaster.Get());
-        context->OMSetBlendState(m_alphaBlend.Get(), nullptr, 0xFFFFFFFF);
-        context->OMSetDepthStencilState(m_depthTestNoWrite.Get(), 0);
+        m_state.InputLayout(context, nullptr);
+        m_state.Topology(context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        m_state.VertexShader(context, m_gridVS.Get());
+        m_state.PixelShader(context, m_gridPS.Get());
+        m_state.Rasterizer(context, m_solidRaster.Get());
+        m_state.Blend(context, m_alphaBlend.Get());
+        m_state.DepthStencil(context, m_depthTestNoWrite.Get());
         context->Draw(3, 0);
         ++drawCalls;
     }
 
-    // 3. Depth-tested lines (Z axis, volumes), 4. overlay lines (selection outlines).
-    if (settings.showAxes) {
-        const float length = camera.gridFadeDistance;
-        m_lines.AddLine({0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, length}, kAxisZColor);
-        m_lines.AddLine({0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -length}, kAxisZBelowColor);
+    // 3. Depth-tested scene lines (Z axis, volumes).
+    if (m_sceneLines.UploadedVertexCount() > 0) {
+        m_state.VertexBuffers(context, m_sceneLines.VertexBuffer(), LineBatch::kStride, nullptr, 0);
+        m_state.InputLayout(context, m_lineLayout.Get());
+        m_state.Topology(context, D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+        m_state.VertexShader(context, m_lineVS.Get());
+        m_state.PixelShader(context, m_linePS.Get());
+        m_state.Rasterizer(context, m_lineRaster.Get());
+        m_state.Blend(context, m_alphaBlend.Get());
+        m_state.DepthStencil(context, m_depthTestNoWrite.Get());
+        context->Draw(m_sceneLines.UploadedVertexCount(), 0);
+        ++drawCalls;
     }
-    drawCalls += DrawLines(context, m_lines, m_depthTestNoWrite.Get());
-    drawCalls += DrawLines(context, m_overlayLines, m_depthDisabled.Get());
+
+    // 4. Selection outlines: the wire box, instanced, always on top. 32 bytes per outline instead of
+    //    24 line vertices.
+    if (m_outlineCount > 0) {
+        BindMeshInput(context);
+        m_state.Topology(context, D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+        m_state.PixelShader(context, m_wirePS.Get());
+        m_state.Rasterizer(context, m_lineRaster.Get());
+        m_state.Blend(context, m_alphaBlend.Get());
+        m_state.DepthStencil(context, m_depthDisabled.Get());
+        context->DrawIndexedInstanced(m_wireBoxRange.indexCount, m_outlineCount, m_wireBoxRange.firstIndex,
+                                      m_wireBoxRange.baseVertex, m_firstOutline);
+        ++drawCalls;
+    }
     return drawCalls;
 }
 

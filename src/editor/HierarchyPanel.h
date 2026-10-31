@@ -46,7 +46,8 @@ private:
     void BeginRename(const SceneTree& tree, NodeId id);
     void ApplyPendingEdits(SceneTree& tree);
 
-    std::vector<uint32_t> m_rows; // indices of rows not hidden inside collapsed groups (rebuilt per frame)
+    std::vector<uint32_t> m_rows; // indices of rows not hidden inside collapsed groups
+    uint64_t m_rowsLayoutVersion = ~0ull; // SceneTree::LayoutVersion() m_rows was built for
     std::vector<PendingMove> m_pendingMoves;
     bool m_createGroupRequested = false;
     bool m_deleteRequested = false;

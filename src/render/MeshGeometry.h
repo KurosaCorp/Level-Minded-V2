@@ -30,7 +30,8 @@ struct MeshRange {
 struct MeshGeometry {
     std::vector<MeshVertex> vertices;
     std::vector<uint16_t> indices;  // relative to MeshRange::baseVertex
-    MeshRange ranges[kMeshCount];   // MeshId::None stays empty
+    MeshRange ranges[kMeshCount];   // MeshId::None stays empty (triangle lists)
+    MeshRange wireBox;              // unit box edges as a LINE list, for instanced outlines
 
     const MeshRange& Range(MeshId mesh) const { return ranges[static_cast<uint32_t>(mesh)]; }
 };

@@ -24,6 +24,11 @@ constexpr float kMaxFrameDelta = 0.1f;     // seconds; avoids jumps after an idl
 
 constexpr float kHalfPi = XM_PIDIV2;
 
+// The Z axis is retained scene geometry, so it has a fixed length (well past any grid fade distance).
+constexpr float kAxisLength = 100000.0f;
+constexpr uint32_t kAxisZColor = PackColor(66, 133, 244);
+constexpr uint32_t kAxisZBelowColor = PackColor(66, 133, 244, 80);
+
 } // namespace
 
 void Viewport::BeginDrag(Drag drag, int mouseButton)
@@ -143,8 +148,19 @@ ViewportCamera Viewport::RenderCamera() const
     return camera;
 }
 
-void Viewport::SubmitScene(const SceneTree& scene, ViewportRenderer& renderer) const
+bool Viewport::SubmitScene(const SceneTree& scene, ViewportRenderer& renderer)
 {
+    if (scene.RenderVersion() == m_submittedRenderVersion && m_drawSettings.showAxes == m_submittedShowAxes)
+        return false; // the renderer still holds this exact scene
+    m_submittedRenderVersion = scene.RenderVersion();
+    m_submittedShowAxes = m_drawSettings.showAxes;
+
+    renderer.BeginScene();
+    if (m_drawSettings.showAxes) { // vertical Z axis (X and Y are drawn by the grid shader)
+        renderer.SceneLines().AddLine({0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, kAxisLength}, kAxisZColor);
+        renderer.SceneLines().AddLine({0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -kAxisLength}, kAxisZBelowColor);
+    }
+
     // One linear pass over the node array; hidden subtrees are skipped in one jump.
     for (uint32_t i = 0; i < scene.Size();) {
         const SceneTree::Node& node = scene.NodeAt(i);
@@ -162,13 +178,15 @@ void Viewport::SubmitScene(const SceneTree& scene, ViewportRenderer& renderer) c
                     flags |= kMeshFlagEmissive;
                 renderer.AddMeshInstance(mesh, bounds.center, bounds.halfExtents, KindAlbedo(node.kind), flags);
             } else if (!selected) {
-                renderer.Lines().AddBox(bounds.center, bounds.halfExtents, KindColor(node.kind)); // volume
+                renderer.SceneLines().AddBox(bounds.center, bounds.halfExtents, KindColor(node.kind)); // volume
             }
             if (selected)
-                renderer.OverlayLines().AddBox(bounds.center, bounds.halfExtents, kSelectionColor);
+                renderer.AddOutline(bounds.center, bounds.halfExtents, kSelectionColor);
         }
         ++i;
     }
+    renderer.EndScene();
+    return true;
 }
 
 void Viewport::DrawOrientationGizmo(ImDrawList* drawList, float dpiScale) const

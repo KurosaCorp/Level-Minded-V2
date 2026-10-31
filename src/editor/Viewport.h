@@ -27,7 +27,9 @@ public:
     ViewportCamera RenderCamera() const;
     // Queues every effectively visible item: solid mesh instances (or wire boxes for volumes without a
     // mesh), plus always-on-top outlines for selected items.
-    void SubmitScene(const SceneTree& scene, ViewportRenderer& renderer) const;
+    // The renderer keeps the result, so this rebuilds only when the scene's RenderVersion() or the
+    // axes setting changed. Returns true if it rebuilt.
+    bool SubmitScene(const SceneTree& scene, ViewportRenderer& renderer);
 
     // True while a camera drag is in progress; the app keeps rendering continuously then.
     bool IsInteracting() const { return m_drag != Drag::None; }
@@ -35,6 +37,7 @@ public:
 
     const Rect& GetRect() const { return m_rect; }
     const EditorCamera& Camera() const { return m_camera; }
+    EditorCamera& MutableCamera() { return m_camera; } // scripted control (benchmark)
     float FlySpeed() const { return m_flySpeed; }
     ViewportDrawSettings& DrawSettings() { return m_drawSettings; }
     const ViewportDrawSettings& DrawSettings() const { return m_drawSettings; }
@@ -52,6 +55,10 @@ private:
     int m_dragButton = -1;
     bool m_hasKeyboardFocus = true; // viewport shortcuts active; starts focused
     float m_flySpeed = 8.0f; // world units per second
+
+    // What the renderer's retained scene layer was built from.
+    uint64_t m_submittedRenderVersion = ~0ull;
+    bool m_submittedShowAxes = false;
 };
 
 } // namespace lm

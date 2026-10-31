@@ -12,8 +12,7 @@ const D3D11_INPUT_ELEMENT_DESC LineBatch::kInputLayout[2] = {
 bool LineBatch::Create(ID3D11Device* device)
 {
     m_device = device;
-    m_vertices.reserve(4096);
-    return EnsureCapacity(4096);
+    return EnsureCapacity(1024);
 }
 
 void LineBatch::AddBox(const DirectX::XMFLOAT3& c, const DirectX::XMFLOAT3& h, uint32_t rgba)
@@ -33,7 +32,7 @@ bool LineBatch::EnsureCapacity(size_t vertexCount)
     if (vertexCount <= m_capacity)
         return true;
 
-    size_t capacity = m_capacity ? m_capacity : 4096;
+    size_t capacity = m_capacity ? m_capacity : 1024;
     while (capacity < vertexCount)
         capacity *= 2;
 
@@ -50,31 +49,21 @@ bool LineBatch::EnsureCapacity(size_t vertexCount)
     return true;
 }
 
-uint32_t LineBatch::Flush(ID3D11DeviceContext* context)
+bool LineBatch::Upload(ID3D11DeviceContext* context)
 {
+    m_uploadedVertices = 0;
     if (m_vertices.empty())
-        return 0;
-    if (!EnsureCapacity(m_vertices.size())) {
-        m_vertices.clear();
-        return 0;
-    }
+        return true;
+    if (!EnsureCapacity(m_vertices.size()))
+        return false;
 
     D3D11_MAPPED_SUBRESOURCE mapped;
-    if (FAILED(context->Map(m_vertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-        m_vertices.clear();
-        return 0;
-    }
+    if (FAILED(context->Map(m_vertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        return false;
     std::memcpy(mapped.pData, m_vertices.data(), m_vertices.size() * sizeof(Vertex));
     context->Unmap(m_vertexBuffer.Get(), 0);
-
-    const UINT stride = sizeof(Vertex);
-    const UINT offset = 0;
-    ID3D11Buffer* buffers[] = {m_vertexBuffer.Get()};
-    context->IASetVertexBuffers(0, 1, buffers, &stride, &offset);
-    context->Draw(static_cast<UINT>(m_vertices.size()), 0);
-
-    m_vertices.clear();
-    return 1;
+    m_uploadedVertices = static_cast<uint32_t>(m_vertices.size());
+    return true;
 }
 
 } // namespace lm

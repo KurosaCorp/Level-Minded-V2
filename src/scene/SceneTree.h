@@ -45,8 +45,9 @@ constexpr MeshId DefaultMesh(NodeKind kind)
 //
 // Every subtree occupies the contiguous index range [i, i + subtreeSize), so whole-subtree work
 // (mass selection, visibility propagation, drawing) is a linear scan over adjacent memory with no
-// pointer chasing. Hot per-node data is a 16-byte struct; names and item data live in parallel arrays
-// with the same order. Indices change on structural edits; NodeId stays stable for a node's life.
+// pointer chasing. Hot per-node data is a 16-byte struct; name handles and item data live in parallel
+// arrays with the same order, and all name characters share one buffer. Indices change on structural
+// edits; NodeId stays stable for a node's life.
 //
 // Visibility: each node has its own toggle (kVisible). A node is effectively visible only if it and
 // all its ancestors are visible, so hiding a group hides its contents while each child keeps its own
@@ -111,7 +112,12 @@ public:
     bool Contains(NodeId node) const { return IndexOf(node) != kNoIndex; }
 
     const Node& NodeAt(uint32_t index) const { return m_nodes[index]; }
-    const std::string& NameAt(uint32_t index) const { return m_names[index]; }
+    // Not null-terminated. Valid until the next edit (names live in one shared buffer that may grow).
+    std::string_view NameAt(uint32_t index) const
+    {
+        const NameRef& ref = m_names[index];
+        return {m_nameChars.data() + ref.offset, ref.length};
+    }
     const Bounds& BoundsAt(uint32_t index) const { return m_items[index].bounds; }
     MeshId MeshAt(uint32_t index) const { return m_items[index].mesh; }
     // One past the last node of the subtree rooted at `index`.
@@ -120,20 +126,54 @@ public:
     uint32_t NextSibling(uint32_t index) const;
     bool IsInSubtree(uint32_t root, uint32_t index) const { return index >= root && index < SubtreeEnd(root); }
 
-    // Checks every structural invariant (ordering, sizes, links, cached flags, counters).
+    // ---- Change tracking. Consumers cache derived data and rebuild only when a version changes.
+
+    // Bumped by structural edits and expand/collapse: anything that changes the hierarchy's rows.
+    uint64_t LayoutVersion() const { return m_layoutVersion; }
+    // Bumped by structural edits, visibility and selection: anything that changes what the viewport draws.
+    uint64_t RenderVersion() const { return m_renderVersion; }
+
+    // Checks every structural invariant (ordering, sizes, links, cached flags, counters, names).
     bool Validate() const;
 
+    // Bytes held by each internal array (capacity).
+    struct MemoryUsage {
+        size_t nodes = 0;
+        size_t names = 0;           // name handles + the shared character buffer
+        size_t nameAllocations = 0; // separate heap blocks used for name characters
+        size_t nameGarbage = 0;     // characters of removed/renamed names awaiting compaction
+        size_t items = 0;
+        size_t indexMap = 0;
+        size_t Total() const { return nodes + names + items + indexMap; }
+    };
+    MemoryUsage Memory() const;
+
 private:
+    // A name inside m_nameChars. 8 bytes, so moving nodes moves 8 bytes per name instead of a
+    // 32-byte std::string (and long names never become separate heap blocks).
+    struct NameRef {
+        uint32_t offset;
+        uint32_t length;
+    };
+
     NodeId Insert(std::string_view name, NodeKind kind, const ItemData& item, NodeId parent);
+    NameRef StoreName(std::string_view name);
+    void ReleaseName(const NameRef& ref);
+    void CompactNamesIfNeeded();
     void RebuildLinks();
     void UpdateEffectiveVisibility(uint32_t first, uint32_t end);
+    void StructureChanged() { ++m_layoutVersion; ++m_renderVersion; }
 
-    std::vector<Node> m_nodes;
-    std::vector<std::string> m_names;
-    std::vector<ItemData> m_items;
+    std::vector<Node> m_nodes;          // hot: traversal, flags
+    std::vector<NameRef> m_names;       // parallel to m_nodes
+    std::vector<ItemData> m_items;      // parallel to m_nodes
+    std::vector<char> m_nameChars;      // all names back to back, not null-terminated
     std::vector<uint32_t> m_indexOf;    // NodeId -> index, kNoIndex once removed
     std::vector<uint32_t> m_stack;      // scratch for RebuildLinks
     uint32_t m_selectedItemCount = 0;
+    uint32_t m_nameGarbage = 0;
+    uint64_t m_layoutVersion = 0;
+    uint64_t m_renderVersion = 0;
 };
 
 } // namespace lm

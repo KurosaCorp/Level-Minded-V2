@@ -1,5 +1,6 @@
 #include "app/DebugOverlay.h"
 
+#include "core/Profiler.h"
 #include "editor/Viewport.h"
 #include "scene/SceneTree.h"
 
@@ -34,6 +35,15 @@ void DebugOverlay::Draw(const FrameStats& stats, const OverlayInfo& info, Viewpo
             ImGui::Text("Draw calls  %u (3D)", stats.viewportDrawCalls);
             if (info.scene)
                 ImGui::Text("Scene       %u nodes, %u selected", info.scene->Size(), info.scene->SelectedItemCount());
+            ImGui::Text("Allocs      %llu heap, %llu ImGui (last frame)",
+                        static_cast<unsigned long long>(stats.heapAllocationsLastFrame),
+                        static_cast<unsigned long long>(stats.imguiAllocationsLastFrame));
+            ImGui::Text("GPU upload  %.1f KB, state %u set / %u skipped", double(stats.bytesUploaded) / 1024.0,
+                        stats.stateChangesIssued, stats.stateChangesSkipped);
+            if (ImGui::TreeNodeEx("Profiler", ImGuiTreeNodeFlags_NoTreePushOnOpen)) {
+                for (size_t zone = 0; zone < static_cast<size_t>(Zone::Count); ++zone)
+                    ImGui::Text("  %-16s %7.3f ms", kZoneNames[zone], Profiler().LastMs(static_cast<Zone>(zone)));
+            }
             ImGui::Text("Frames      %llu", static_cast<unsigned long long>(stats.framesRendered));
             ImGui::Text("Wakeups     %llu", static_cast<unsigned long long>(stats.wakeups));
             ImGui::Text("Last sleep  %.2f s", stats.lastSleepSeconds);

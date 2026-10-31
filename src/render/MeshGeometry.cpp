@@ -1,6 +1,7 @@
 #include "render/MeshGeometry.h"
 
 #include <cmath>
+#include <iterator>
 
 using namespace DirectX;
 
@@ -188,6 +189,18 @@ MeshGeometry BuildBuiltinMeshes()
         b.Cone({0, 0, 0.45f}, z, x, y, 0.7f, 0.55f, 20);
         b.Cylinder({0.55f, 0, -0.55f}, x, y, z, 0.14f, 0.6f, 12);
         b.Cone({1.15f, 0, -0.55f}, x, y, z, 0.32f, 0.5f, 12);
+    }
+    {
+        // Wire box: 8 corners (bit 0 = +x, bit 1 = +y, bit 2 = +z) and 12 edges as a line list.
+        MeshRange& range = geometry.wireBox;
+        range.firstIndex = static_cast<uint32_t>(geometry.indices.size());
+        range.baseVertex = static_cast<int32_t>(geometry.vertices.size());
+        for (int i = 0; i < 8; ++i)
+            geometry.vertices.push_back({{(i & 1) ? 1.0f : -1.0f, (i & 2) ? 1.0f : -1.0f, (i & 4) ? 1.0f : -1.0f}, {0, 0, 0}});
+        static constexpr uint16_t kEdges[24] = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 1, 3, 4, 6, 5, 7, 0, 4, 1, 5, 2, 6, 3, 7};
+        geometry.indices.insert(geometry.indices.end(), std::begin(kEdges), std::end(kEdges));
+        range.indexCount = 24;
+        range.vertexCount = 8;
     }
     return geometry;
 }

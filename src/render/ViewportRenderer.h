@@ -4,6 +4,7 @@
 #include "core/Rect.h"
 #include "render/LineBatch.h"
 #include "render/MeshGeometry.h"
+#include "render/StateCache.h"
 
 #include <DirectXMath.h>
 #include <d3d11.h>
@@ -30,40 +31,54 @@ struct ViewportCamera {
 inline constexpr uint32_t kMeshFlagSelected = 1u;
 inline constexpr uint32_t kMeshFlagEmissive = 2u;
 
-// Draws the 3D scene of one viewport, in this order:
-//   1. solid meshes   - instanced, one draw call per mesh type in use (writes depth)
+// Draws the 3D scene of one viewport.
+//
+// Scene content is retained: it is queued between BeginScene() and EndScene() only when the scene
+// changed, uploaded to the GPU once, and redrawn from GPU buffers every frame after that. A frame
+// where only the camera moves uploads nothing but one small constant buffer.
+//
+// Draw order (one draw call each, skipped when empty):
+//   1. solid meshes   - instanced, one draw per mesh type in use (writes depth)
 //   2. ground grid    - one full-viewport triangle (depth-tested against the meshes)
-//   3. lines          - one draw call, depth-tested (axes, volumes)
-//   4. overlay lines  - one draw call, always on top (selection outlines)
+//   3. scene lines    - depth-tested (axes, volumes)
+//   4. outlines       - instanced wire boxes, always on top (selection)
 class ViewportRenderer {
 public:
     bool Create(ID3D11Device* device);
 
-    // Queues one mesh instance for the next Render(): built-in `mesh` scaled by `scale` (the mesh is
-    // modeled in [-1, 1]^3, so scale = half extents) and placed at `position`.
+    // ---- Scene layer (retained until the next BeginScene)
+    void BeginScene();
+    // Built-in `mesh` (modeled in [-1, 1]^3) scaled by `scale` (half extents) and placed at `position`.
     void AddMeshInstance(MeshId mesh, const DirectX::XMFLOAT3& position, const DirectX::XMFLOAT3& scale, uint32_t rgba,
                          uint32_t flags = 0);
-    // Lines queued here are drawn by the next Render() call.
-    LineBatch& Lines() { return m_lines; }
-    LineBatch& OverlayLines() { return m_overlayLines; }
+    // Always-on-top wireframe box.
+    void AddOutline(const DirectX::XMFLOAT3& center, const DirectX::XMFLOAT3& halfExtents, uint32_t rgba);
+    LineBatch& SceneLines() { return m_sceneLines; }
+    void EndScene(); // the queued scene is uploaded by the next Render()
 
-    // Renders into the currently bound render target + depth buffer, restricted to `rect`, then clears
-    // all queued instances and lines. Returns the number of draw calls issued.
+    // Renders into the currently bound render target + depth buffer, restricted to `rect`.
+    // Returns the number of draw calls issued.
     uint32_t Render(ID3D11DeviceContext* context, const Rect& rect, const ViewportCamera& camera,
                     const ViewportDrawSettings& settings);
 
+    // Pipeline-state calls of the last Render(): sent to D3D11, and filtered out as redundant.
+    uint32_t StateChangesIssued() const { return m_state.Issued(); }
+    uint32_t StateChangesSkipped() const { return m_state.Skipped(); }
+    // Bytes uploaded to the GPU by the last Render() (scene data + per-frame constants).
+    size_t BytesUploadedLastFrame() const { return m_bytesUploaded; }
+
 private:
-    struct MeshInstance {
+    struct Instance {
         DirectX::XMFLOAT3 position;
         DirectX::XMFLOAT3 scale;
         uint32_t color;
         uint32_t flags;
     };
-    static_assert(sizeof(MeshInstance) == 32);
+    static_assert(sizeof(Instance) == 32);
 
     bool CreateMeshResources(ID3D11Device* device);
-    uint32_t DrawMeshes(ID3D11DeviceContext* context);
-    uint32_t DrawLines(ID3D11DeviceContext* context, LineBatch& lines, ID3D11DepthStencilState* depthState);
+    bool UploadScene(ID3D11DeviceContext* context);
+    void BindMeshInput(ID3D11DeviceContext* context);
 
     template <typename T>
     using ComPtr = Microsoft::WRL::ComPtr<T>;
@@ -77,29 +92,38 @@ private:
     ComPtr<ID3D11InputLayout> m_lineLayout;
     ComPtr<ID3D11VertexShader> m_meshVS;
     ComPtr<ID3D11PixelShader> m_meshPS;
+    ComPtr<ID3D11PixelShader> m_wirePS;
     ComPtr<ID3D11InputLayout> m_meshLayout;
 
     ComPtr<ID3D11BlendState> m_alphaBlend;
     ComPtr<ID3D11DepthStencilState> m_depthTestWrite;   // opaque meshes
     ComPtr<ID3D11DepthStencilState> m_depthTestNoWrite; // grid, lines
-    ComPtr<ID3D11DepthStencilState> m_depthDisabled;    // overlay lines
+    ComPtr<ID3D11DepthStencilState> m_depthDisabled;    // outlines
     ComPtr<ID3D11RasterizerState> m_solidRaster;        // no culling (grid)
     ComPtr<ID3D11RasterizerState> m_meshRaster;         // back-face culling
     ComPtr<ID3D11RasterizerState> m_lineRaster;
 
-    // Built-in meshes: one shared vertex + index buffer.
+    // Built-in meshes and the wire box share one vertex + index buffer.
     ComPtr<ID3D11Buffer> m_meshVertices;
     ComPtr<ID3D11Buffer> m_meshIndices;
     MeshRange m_meshRanges[kMeshCount];
+    MeshRange m_wireBoxRange;
 
-    // Instances are bucketed per mesh on the CPU, then uploaded in one Map per frame.
-    std::vector<MeshInstance> m_instances[kMeshCount];
-    std::vector<MeshInstance> m_instanceUpload;
+    // Scene layer, CPU side: per-mesh buckets + outlines; GPU side: one instance buffer laid out as
+    // [mesh 1 instances][mesh 2 instances]...[outline instances].
+    std::vector<Instance> m_instances[kMeshCount];
+    std::vector<Instance> m_outlines;
+    LineBatch m_sceneLines;
+    bool m_sceneDirty = true;
     ComPtr<ID3D11Buffer> m_instanceBuffer;
     size_t m_instanceCapacity = 0;
+    UINT m_firstInstance[kMeshCount] = {};
+    UINT m_instanceCount[kMeshCount] = {};
+    UINT m_firstOutline = 0;
+    UINT m_outlineCount = 0;
 
-    LineBatch m_lines;
-    LineBatch m_overlayLines;
+    StateCache m_state;
+    size_t m_bytesUploaded = 0;
 };
 
 } // namespace lm

@@ -94,16 +94,30 @@ void DrawItemIcon(ImDrawList* dl, ImVec2 c, float size, const CatalogItem& item)
     }
 }
 
-// "World / Props / Crates" for a group, or "Top level".
-std::string GroupPath(const SceneTree& tree, NodeId group)
+// Writes "World / Props / Crates" for a group (or "Top level") into `out`. No heap allocations;
+// very deep or long paths are truncated.
+void FormatGroupPath(const SceneTree& tree, NodeId group, char (&out)[256])
 {
     uint32_t index = tree.IndexOf(group);
-    if (index == SceneTree::kNoIndex)
-        return "Top level";
-    std::string path;
-    for (; index != SceneTree::kNoIndex; index = tree.NodeAt(index).parent)
-        path = tree.NameAt(index) + (path.empty() ? "" : " / " + path);
-    return path;
+    if (index == SceneTree::kNoIndex) {
+        std::snprintf(out, sizeof(out), "Top level");
+        return;
+    }
+    uint32_t chain[32];
+    int depth = 0;
+    for (; index != SceneTree::kNoIndex && depth < 32; index = tree.NodeAt(index).parent)
+        chain[depth++] = index;
+
+    size_t length = 0;
+    out[0] = '\0';
+    for (int i = depth - 1; i >= 0 && length + 1 < sizeof(out); --i) {
+        const std::string_view name = tree.NameAt(chain[i]);
+        const int written = std::snprintf(out + length, sizeof(out) - length, i == depth - 1 ? "%.*s" : " / %.*s",
+                                          static_cast<int>(name.size()), name.data());
+        if (written < 0)
+            break;
+        length = std::min(sizeof(out) - 1, length + static_cast<size_t>(written));
+    }
 }
 
 } // namespace
@@ -122,7 +136,9 @@ NodeId AssetPanel::Draw(SceneTree& tree, NodeId targetGroup, float dpiScale)
 
     ImGui::TextDisabled("Adds to");
     ImGui::SameLine();
-    ImGui::TextWrapped("%s", GroupPath(tree, targetGroup).c_str());
+    char path[256];
+    FormatGroupPath(tree, targetGroup, path);
+    ImGui::TextWrapped("%s", path);
     ImGui::SetNextItemWidth(-FLT_MIN);
     m_filter.Draw("##filter");
     if (!m_filter.IsActive()) { // placeholder text
