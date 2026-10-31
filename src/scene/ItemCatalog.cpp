@@ -1,5 +1,7 @@
 #include "scene/ItemCatalog.h"
 
+#include <cwctype>
+
 namespace lm {
 
 namespace {
@@ -23,9 +25,60 @@ std::span<const CatalogItem> ItemCatalog()
     return kCatalog;
 }
 
+AssetCatalog::AssetCatalog()
+{
+    const std::span<const CatalogItem> builtins = ItemCatalog();
+    m_items.assign(builtins.begin(), builtins.end());
+    m_sources.resize(m_items.size());
+    m_sourceKeys.resize(m_items.size());
+}
+
+std::wstring AssetCatalog::SourceKey(const std::filesystem::path& path)
+{
+    std::error_code error;
+    std::filesystem::path absolute = std::filesystem::weakly_canonical(path, error);
+    if (error)
+        absolute = std::filesystem::absolute(path, error);
+    std::wstring key = (error ? path : absolute).lexically_normal().wstring();
+    for (wchar_t& c : key)
+        c = static_cast<wchar_t>(std::towlower(c)); // Windows paths are case-insensitive
+    return key;
+}
+
+size_t AssetCatalog::AddImported(std::string_view name, std::string_view description, const char* format, MeshId mesh,
+                                 const DirectX::XMFLOAT3& halfExtents, const std::filesystem::path& source)
+{
+    // Unique display name: it also prefixes the names of spawned nodes.
+    std::string unique(name.empty() ? std::string_view("Model") : name);
+    const auto taken = [&](const std::string& candidate) {
+        for (const CatalogItem& item : m_items)
+            if (candidate == item.name)
+                return true;
+        return false;
+    };
+    for (int n = 2; taken(unique); ++n)
+        unique = std::string(name.empty() ? std::string_view("Model") : name) + " (" + std::to_string(n) + ")";
+
+    const char* storedName = m_text.emplace_back(std::move(unique)).c_str();
+    const char* storedDescription = m_text.emplace_back(description).c_str();
+    m_items.push_back({storedName, storedDescription, NodeKind::Mesh, mesh, halfExtents, format});
+    m_sources.push_back(source);
+    m_sourceKeys.push_back(SourceKey(source));
+    return m_items.size() - 1;
+}
+
+size_t AssetCatalog::FindSource(const std::filesystem::path& source) const
+{
+    const std::wstring key = SourceKey(source);
+    for (size_t i = 0; i < m_sourceKeys.size(); ++i)
+        if (!m_sourceKeys[i].empty() && m_sourceKeys[i] == key)
+            return i;
+    return npos;
+}
+
 NodeId SpawnCatalogItem(SceneTree& tree, const CatalogItem& item, NodeId parent, std::string_view name)
 {
-    // Pivot at the bottom center: the item rests on the ground plane at the origin.
+    // The pivot is the box center; it is lifted so the item rests on the ground plane at the origin.
     const Bounds bounds{{0.0f, 0.0f, item.halfExtents.z}, item.halfExtents};
     return tree.CreateItem(name, item.kind, bounds, parent, item.mesh);
 }

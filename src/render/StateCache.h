@@ -65,7 +65,7 @@ public:
     void IndexBuffer(ID3D11DeviceContext* c, ID3D11Buffer* v)
     {
         if (Changed(m_indexBuffer, v))
-            c->IASetIndexBuffer(v, DXGI_FORMAT_R16_UINT, 0);
+            c->IASetIndexBuffer(v, DXGI_FORMAT_R32_UINT, 0);
     }
 
     uint32_t Issued() const { return m_issued; }

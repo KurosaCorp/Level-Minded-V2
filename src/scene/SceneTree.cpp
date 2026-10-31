@@ -33,7 +33,11 @@ NodeId SceneTree::CreateItem(std::string_view name, NodeKind kind, const Bounds&
 {
     if (kind == NodeKind::Group)
         return kInvalidNode;
-    return Insert(name, kind, ItemData{bounds, mesh == MeshId::Default ? DefaultMesh(kind) : mesh}, parent);
+    ItemData item;
+    item.transform.position = bounds.center;
+    item.halfExtents = bounds.halfExtents;
+    item.mesh = mesh == MeshId::Default ? DefaultMesh(kind) : mesh;
+    return Insert(name, kind, item, parent);
 }
 
 SceneTree::NameRef SceneTree::StoreName(std::string_view name)
@@ -254,7 +258,7 @@ void SceneTree::SetVisible(NodeId nodeId, bool visible)
         return;
     node.flags = visible ? (node.flags | kVisible) : (node.flags & ~kVisible);
     UpdateEffectiveVisibility(index, SubtreeEnd(index));
-    ++m_renderVersion;
+    RenderChanged();
 }
 
 void SceneTree::SetSelected(NodeId nodeId, bool selected)
@@ -281,7 +285,7 @@ void SceneTree::SetSelected(NodeId nodeId, bool selected)
         }
     }
     if (changed)
-        ++m_renderVersion;
+        RenderChanged();
 }
 
 void SceneTree::ClearSelection()
@@ -293,7 +297,7 @@ void SceneTree::ClearSelection()
     }
     m_selectedItemCount = 0;
     if (any)
-        ++m_renderVersion;
+        RenderChanged();
 }
 
 void SceneTree::SetExpanded(NodeId nodeId, bool expanded)
@@ -306,6 +310,40 @@ void SceneTree::SetExpanded(NodeId nodeId, bool expanded)
         return;
     node.flags = expanded ? (node.flags | kExpanded) : (node.flags & ~kExpanded);
     ++m_layoutVersion;
+}
+
+void SceneTree::SetTransform(NodeId nodeId, const Transform& transform)
+{
+    const uint32_t index = IndexOf(nodeId);
+    if (index != kNoIndex)
+        SetTransformAt(index, transform);
+}
+
+void SceneTree::SetTransformAt(uint32_t index, const Transform& transform)
+{
+    if (index >= Size() || m_nodes[index].IsGroup() || m_items[index].transform == transform)
+        return;
+    m_items[index].transform = transform;
+    ++m_transformVersion;
+    // Too many changes to patch one by one: ask consumers for one full rebuild instead.
+    if (m_transformChanges.size() >= std::max<size_t>(4096, m_nodes.size()))
+        RenderChanged();
+    if (m_transformChanges.capacity() == 0)
+        m_transformChanges.reserve(4096); // one allocation, then none for typical drags
+    m_transformChanges.push_back(m_nodes[index].id);
+}
+
+Bounds SceneTree::WorldBoundsAt(uint32_t index) const
+{
+    using namespace DirectX;
+    const ItemData& item = m_items[index];
+    // Half extents of an oriented box along world axes: sum of |column| of rotation * size.
+    const XMMATRIX m = ItemMatrix(item.transform, item.halfExtents);
+    const XMVECTOR extent = XMVectorAdd(XMVectorAdd(XMVectorAbs(m.r[0]), XMVectorAbs(m.r[1])), XMVectorAbs(m.r[2]));
+    Bounds bounds;
+    bounds.center = item.transform.position;
+    XMStoreFloat3(&bounds.halfExtents, extent);
+    return bounds;
 }
 
 uint32_t SceneTree::NextSibling(uint32_t index) const

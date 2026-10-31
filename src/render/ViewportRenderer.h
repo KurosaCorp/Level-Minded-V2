@@ -3,7 +3,7 @@
 #include "core/MeshId.h"
 #include "core/Rect.h"
 #include "render/LineBatch.h"
-#include "render/MeshGeometry.h"
+#include "render/MeshLibrary.h"
 #include "render/StateCache.h"
 
 #include <DirectXMath.h>
@@ -27,6 +27,10 @@ struct ViewportCamera {
     float gridFadeDistance;
 };
 
+// Identifies an instance queued since the last BeginScene(), for UpdateInstance().
+using InstanceHandle = uint32_t;
+inline constexpr InstanceHandle kNoInstance = 0xFFFFFFFFu;
+
 // Flags for AddMeshInstance.
 inline constexpr uint32_t kMeshFlagSelected = 1u;
 inline constexpr uint32_t kMeshFlagEmissive = 2u;
@@ -35,7 +39,12 @@ inline constexpr uint32_t kMeshFlagEmissive = 2u;
 //
 // Scene content is retained: it is queued between BeginScene() and EndScene() only when the scene
 // changed, uploaded to the GPU once, and redrawn from GPU buffers every frame after that. A frame
-// where only the camera moves uploads nothing but one small constant buffer.
+// where only the camera moves uploads nothing but one small constant buffer. Moving items
+// (UpdateInstance) re-uploads just the changed instance ranges.
+//
+// Meshes come from a MeshLibrary (built-in + imported, one contiguous vertex/index array). The
+// renderer mirrors it in one GPU vertex buffer and one 32-bit index buffer that grow by doubling;
+// when a model is imported only the new vertices and indices are uploaded.
 //
 // Draw order (one draw call each, skipped when empty):
 //   1. solid meshes   - instanced, one draw per mesh type in use (writes depth)
@@ -44,17 +53,26 @@ inline constexpr uint32_t kMeshFlagEmissive = 2u;
 //   4. outlines       - instanced wire boxes, always on top (selection)
 class ViewportRenderer {
 public:
-    bool Create(ID3D11Device* device);
+    // `meshes` must outlive the renderer; meshes appended to it later are picked up by Render().
+    bool Create(ID3D11Device* device, const MeshLibrary* meshes);
 
     // ---- Scene layer (retained until the next BeginScene)
     void BeginScene();
-    // Built-in `mesh` (modeled in [-1, 1]^3) scaled by `scale` (half extents) and placed at `position`.
-    void AddMeshInstance(MeshId mesh, const DirectX::XMFLOAT3& position, const DirectX::XMFLOAT3& scale, uint32_t rgba,
-                         uint32_t flags = 0);
-    // Always-on-top wireframe box.
-    void AddOutline(const DirectX::XMFLOAT3& center, const DirectX::XMFLOAT3& halfExtents, uint32_t rgba);
+    // Library `mesh` (modeled in [-1, 1]^3) scaled by `size` (half extents), rotated by `rotation`
+    // (unit quaternion) and placed at `position`.
+    InstanceHandle AddMeshInstance(MeshId mesh, const DirectX::XMFLOAT3& position, const DirectX::XMFLOAT4& rotation,
+                                   const DirectX::XMFLOAT3& size, uint32_t rgba, uint32_t flags = 0);
+    // Always-on-top wireframe box, placed like a mesh instance.
+    InstanceHandle AddOutline(const DirectX::XMFLOAT3& position, const DirectX::XMFLOAT4& rotation,
+                              const DirectX::XMFLOAT3& size, uint32_t rgba);
     LineBatch& SceneLines() { return m_sceneLines; }
     void EndScene(); // the queued scene is uploaded by the next Render()
+
+    // Moves an instance of the retained scene. Only the changed range is uploaded by the next Render().
+    void UpdateInstance(InstanceHandle handle, const DirectX::XMFLOAT3& position, const DirectX::XMFLOAT4& rotation,
+                        const DirectX::XMFLOAT3& size);
+    // Call after changing SceneLines() outside BeginScene/EndScene: the next Render() re-uploads them.
+    void SceneLinesChanged() { m_linesDirty = true; }
 
     // Renders into the currently bound render target + depth buffer, restricted to `rect`.
     // Returns the number of draw calls issued.
@@ -70,14 +88,18 @@ public:
 private:
     struct Instance {
         DirectX::XMFLOAT3 position;
+        DirectX::XMFLOAT4 rotation; // unit quaternion
         DirectX::XMFLOAT3 scale;
         uint32_t color;
         uint32_t flags;
     };
-    static_assert(sizeof(Instance) == 32);
+    static_assert(sizeof(Instance) == 48);
 
     bool CreateMeshResources(ID3D11Device* device);
+    bool SyncMeshes(ID3D11DeviceContext* context);
     bool UploadScene(ID3D11DeviceContext* context);
+    void UploadInstanceRange(ID3D11DeviceContext* context, const Instance* data, UINT first, UINT count);
+    std::vector<Instance>& Bucket(uint32_t bucket) { return bucket == 0 ? m_outlines : m_instances[bucket]; }
     void BindMeshInput(ID3D11DeviceContext* context);
 
     template <typename T>
@@ -103,22 +125,31 @@ private:
     ComPtr<ID3D11RasterizerState> m_meshRaster;         // back-face culling
     ComPtr<ID3D11RasterizerState> m_lineRaster;
 
-    // Built-in meshes and the wire box share one vertex + index buffer.
+    // GPU copy of the mesh library: every mesh and the wire box in one vertex + index buffer.
+    const MeshLibrary* m_meshes = nullptr;
     ComPtr<ID3D11Buffer> m_meshVertices;
     ComPtr<ID3D11Buffer> m_meshIndices;
-    MeshRange m_meshRanges[kMeshCount];
-    MeshRange m_wireBoxRange;
+    size_t m_vertexCapacity = 0;   // vertices / indices the GPU buffers can hold
+    size_t m_indexCapacity = 0;
+    size_t m_uploadedVertices = 0; // library prefix already on the GPU
+    size_t m_uploadedIndices = 0;
+    uint64_t m_meshVersion = 0;
 
     // Scene layer, CPU side: per-mesh buckets + outlines; GPU side: one instance buffer laid out as
-    // [mesh 1 instances][mesh 2 instances]...[outline instances].
-    std::vector<Instance> m_instances[kMeshCount];
+    // [mesh 1 instances][mesh 2 instances]...[outline instances]. An InstanceHandle is
+    // (bucket << 20) | index, with bucket 0 (MeshId::None, never drawn as a mesh) meaning outlines.
+    // The per-bucket vectors are indexed by MeshId and grow with the library (at BeginScene).
+    std::vector<std::vector<Instance>> m_instances;
     std::vector<Instance> m_outlines;
     LineBatch m_sceneLines;
     bool m_sceneDirty = true;
+    bool m_linesDirty = false;
+    std::vector<uint32_t> m_dirtyBegin; // per bucket: instances changed by UpdateInstance, [begin, end)
+    std::vector<uint32_t> m_dirtyEnd;
     ComPtr<ID3D11Buffer> m_instanceBuffer;
     size_t m_instanceCapacity = 0;
-    UINT m_firstInstance[kMeshCount] = {};
-    UINT m_instanceCount[kMeshCount] = {};
+    std::vector<UINT> m_firstInstance;
+    std::vector<UINT> m_instanceCount;
     UINT m_firstOutline = 0;
     UINT m_outlineCount = 0;
 

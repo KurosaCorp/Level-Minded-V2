@@ -15,16 +15,57 @@ bool LineBatch::Create(ID3D11Device* device)
     return EnsureCapacity(1024);
 }
 
+namespace {
+
+// Corner i has bit 0 = +x, bit 1 = +y, bit 2 = +z.
+constexpr uint8_t kBoxEdges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3},
+                                      {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+
+} // namespace
+
 void LineBatch::AddBox(const DirectX::XMFLOAT3& c, const DirectX::XMFLOAT3& h, uint32_t rgba)
 {
-    // Corner i has bit 0 = +x, bit 1 = +y, bit 2 = +z.
     DirectX::XMFLOAT3 corners[8];
     for (int i = 0; i < 8; ++i)
         corners[i] = {c.x + ((i & 1) ? h.x : -h.x), c.y + ((i & 2) ? h.y : -h.y), c.z + ((i & 4) ? h.z : -h.z)};
-    static constexpr uint8_t kEdges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3},
-                                              {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
-    for (const auto& edge : kEdges)
+    for (const auto& edge : kBoxEdges)
         AddLine(corners[edge[0]], corners[edge[1]], rgba);
+}
+
+namespace {
+
+void BoxCorners(DirectX::FXMMATRIX unitToWorld, DirectX::XMFLOAT3 (&corners)[8])
+{
+    using namespace DirectX;
+    for (int i = 0; i < 8; ++i) {
+        const XMVECTOR local = XMVectorSet((i & 1) ? 1.0f : -1.0f, (i & 2) ? 1.0f : -1.0f, (i & 4) ? 1.0f : -1.0f, 1.0f);
+        XMStoreFloat3(&corners[i], XMVector3TransformCoord(local, unitToWorld));
+    }
+}
+
+} // namespace
+
+uint32_t LineBatch::AddBox(DirectX::FXMMATRIX unitToWorld, uint32_t rgba)
+{
+    const auto first = static_cast<uint32_t>(m_vertices.size());
+    DirectX::XMFLOAT3 corners[8];
+    BoxCorners(unitToWorld, corners);
+    for (const auto& edge : kBoxEdges)
+        AddLine(corners[edge[0]], corners[edge[1]], rgba);
+    return first;
+}
+
+void LineBatch::SetBox(uint32_t firstVertex, DirectX::FXMMATRIX unitToWorld)
+{
+    if (size_t(firstVertex) + 24 > m_vertices.size())
+        return;
+    DirectX::XMFLOAT3 corners[8];
+    BoxCorners(unitToWorld, corners);
+    Vertex* vertex = m_vertices.data() + firstVertex;
+    for (const auto& edge : kBoxEdges) {
+        (vertex++)->position = corners[edge[0]];
+        (vertex++)->position = corners[edge[1]];
+    }
 }
 
 bool LineBatch::EnsureCapacity(size_t vertexCount)

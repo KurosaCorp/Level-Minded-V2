@@ -28,6 +28,7 @@ public:
     // Group that new content goes into: the active (last clicked) node if it is a group, otherwise
     // the active item's parent. kInvalidNode means the top level.
     NodeId ActiveGroup(const SceneTree& tree) const;
+    NodeId ActiveNode() const { return m_activeNode; }
     void SetActiveNode(NodeId node) { m_activeNode = node; }
     // Expands all ancestors of `node` and scrolls it into view on the next Draw().
     void Reveal(SceneTree& tree, NodeId node);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "scene/Picking.h"
+
 #include <DirectXMath.h>
 
 namespace lm {
@@ -21,12 +23,20 @@ public:
     void Move(const DirectX::XMFLOAT3& localDirection, float distance); // x right, y world-up, z forward
     void SetOrientation(float yaw, float pitch);
     void SetTarget(const DirectX::XMFLOAT3& target) { m_target = target; }
+    // Moves the camera back along its view direction until a sphere of `radius` around the target fits.
+    void FrameSphere(float radius);
 
     DirectX::XMFLOAT3 Eye() const;
     const DirectX::XMFLOAT3& Target() const { return m_target; }
     float Distance() const { return m_distance; }
     float Yaw() const { return m_yaw; }
     float Pitch() const { return m_pitch; }
+    float FovY() const { return m_fovY; }
+    float NearZ() const { return m_nearZ; }
+    DirectX::XMVECTOR ForwardVector() const { return Forward(); }
+
+    // World-space ray from the eye through a point of the image. ndcX/ndcY in [-1, 1], +y up.
+    Ray ScreenRay(float ndcX, float ndcY, float aspect) const;
 
     DirectX::XMMATRIX ViewMatrix() const;
     // Reversed-Z perspective with an infinite far plane (depth 1 at the near plane, 0 at infinity).

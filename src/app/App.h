@@ -7,11 +7,14 @@
 #include "editor/Viewport.h"
 #include "platform/Window.h"
 #include "render/GpuDevice.h"
+#include "render/MeshLibrary.h"
 #include "render/ViewportRenderer.h"
+#include "scene/ItemCatalog.h"
 #include "scene/SceneTree.h"
 
 #include <array>
 #include <string>
+#include <vector>
 
 typedef unsigned int ImGuiID;
 
@@ -21,6 +24,7 @@ struct AppOptions {
     uint32_t stressItems = 0;              // --stress N: add N items to the mock level
     uint32_t benchFrames = 0;              // --bench N: run the benchmark script (N frames per phase), then exit
     std::wstring benchOutput = L"bench.txt"; // --bench-out PATH
+    std::vector<std::wstring> importFiles; // --import PATH (repeatable): import models at startup
 };
 
 // Owns the window, GPU device and UI, and runs the event-driven main loop.
@@ -60,6 +64,11 @@ private:
     void WriteBenchReport() const;
     void BuildDefaultLayout(ImGuiID dockspaceId);
     void ApplyStyle(float dpiScale);
+    void DrawMainMenu();
+    // Imports the files queued by drag & drop, File > Import Asset or --import.
+    void ImportPendingFiles();
+    bool ImportFile(const std::wstring& path, std::string& message); // true on success
+    void ShowImportDialog(); // modal open-file dialog; queues the chosen files
     void MarkActive();
     DWORD IdleWaitTimeoutMs() const;
 
@@ -67,14 +76,19 @@ private:
     void OnWindowResized(uint32_t width, uint32_t height) override;
     void OnWindowDpiChanged(float dpiScale) override;
     void OnWindowLiveResize() override;
+    void OnFilesDropped(std::span<const std::wstring> paths) override;
 
     Window m_window;
     GpuDevice m_gpu;
+    MeshLibrary m_meshes;   // built-in + imported meshes; outlives the renderer that mirrors it
+    AssetCatalog m_catalog; // what the Assets panel offers
     ViewportRenderer m_viewportRenderer;
     SceneTree m_scene;
     Viewport m_viewport;
     HierarchyPanel m_hierarchy;
     AssetPanel m_assets;
+    std::vector<std::wstring> m_pendingImports;
+    bool m_openImportDialog = false; // opened after the frame is presented (the dialog is modal)
     DebugOverlay m_overlay;
     FrameStats m_stats;
 
@@ -89,7 +103,8 @@ private:
     bool m_quitRequested = false;
     uint32_t m_benchFrame = 0;
     NodeId m_benchToggleGroup = kInvalidNode;
-    std::array<BenchPhase, 2> m_benchPhases{};
+    NodeId m_benchMoveItem = kInvalidNode;
+    std::array<BenchPhase, 3> m_benchPhases{};
 };
 
 } // namespace lm

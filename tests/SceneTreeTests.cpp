@@ -1,15 +1,20 @@
 // Unit tests and a small benchmark for lm::SceneTree. Run: build\<preset>\bin\LevelMindedTests.exe
 // (or `ctest` in the build directory). Exit code is non-zero on failure.
 
+#include "import/ModelImporter.h"
 #include "render/MeshGeometry.h"
+#include "render/MeshLibrary.h"
 #include "scene/ItemCatalog.h"
 #include "scene/MockLevel.h"
+#include "scene/Picking.h"
 #include "scene/SceneTree.h"
 
 #include <chrono>
 #include <cmath>
 #include <set>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -310,9 +315,11 @@ void TestCatalogSpawn()
     CHECK(f.tree.NodeAt(index).kind == spawnPoint.kind);
     CHECK(f.tree.MeshAt(index) == spawnPoint.mesh);
     // Base at the origin: centered on X/Y, resting on Z = 0.
-    const Bounds& b = f.tree.BoundsAt(index);
-    CHECK(b.center.x == 0.0f && b.center.y == 0.0f && b.center.z == spawnPoint.halfExtents.z);
-    CHECK(b.halfExtents.x == spawnPoint.halfExtents.x && b.halfExtents.z == spawnPoint.halfExtents.z);
+    const ItemData& item = f.tree.ItemAt(index);
+    CHECK(item.transform.position.x == 0.0f && item.transform.position.y == 0.0f &&
+          item.transform.position.z == spawnPoint.halfExtents.z);
+    CHECK(item.transform.scale.x == 1.0f && item.transform.rotation.w == 1.0f); // unrotated, scale 1
+    CHECK(item.halfExtents.x == spawnPoint.halfExtents.x && item.halfExtents.z == spawnPoint.halfExtents.z);
 
     // Top level, and inheriting hidden-ness from a hidden target group.
     CHECK(SpawnCatalogItem(f.tree, catalog[0], kInvalidNode, "Cube_01") != kInvalidNode);
@@ -344,7 +351,7 @@ void TestCatalogSpawn()
 void TestMeshWinding()
 {
     const MeshGeometry geometry = BuildBuiltinMeshes();
-    for (uint32_t m = 1; m < kMeshCount; ++m) {
+    for (uint32_t m = 1; m < kBuiltinMeshCount; ++m) {
         const MeshRange& range = geometry.ranges[m];
         CHECK(range.indexCount > 0 && range.indexCount % 3 == 0);
         int bad = 0;
@@ -376,14 +383,428 @@ void TestMeshWinding()
     const MeshRange& wire = geometry.wireBox;
     CHECK(wire.indexCount == 24 && wire.vertexCount == 8);
     for (uint32_t e = 0; e < wire.indexCount; e += 2) {
-        const uint16_t i0 = geometry.indices[wire.firstIndex + e];
-        const uint16_t i1 = geometry.indices[wire.firstIndex + e + 1];
+        const uint32_t i0 = geometry.indices[wire.firstIndex + e];
+        const uint32_t i1 = geometry.indices[wire.firstIndex + e + 1];
         CHECK(i0 < 8 && i1 < 8);
         const auto& p0 = geometry.vertices[static_cast<size_t>(wire.baseVertex) + i0].position;
         const auto& p1 = geometry.vertices[static_cast<size_t>(wire.baseVertex) + i1].position;
         const float d = std::fabs(p0.x - p1.x) + std::fabs(p0.y - p1.y) + std::fabs(p0.z - p1.z);
         CHECK(d == 2.0f);
     }
+}
+
+bool Near(float a, float b, float epsilon = 1e-4f)
+{
+    return std::fabs(a - b) <= epsilon;
+}
+
+bool Near3(const DirectX::XMFLOAT3& v, float x, float y, float z, float epsilon = 1e-4f)
+{
+    return Near(v.x, x, epsilon) && Near(v.y, y, epsilon) && Near(v.z, z, epsilon);
+}
+
+DirectX::XMFLOAT3 Store3(DirectX::FXMVECTOR v)
+{
+    DirectX::XMFLOAT3 out;
+    DirectX::XMStoreFloat3(&out, v);
+    return out;
+}
+
+DirectX::XMFLOAT4 RotationZ(float degrees)
+{
+    DirectX::XMFLOAT4 q;
+    DirectX::XMStoreFloat4(&q, DirectX::XMQuaternionRotationNormal(DirectX::g_XMIdentityR2, DirectX::XMConvertToRadians(degrees)));
+    return q;
+}
+
+// The transform-tool operations used by the viewport gizmo, and the scene's transform storage.
+void TestTransforms()
+{
+    using namespace DirectX;
+    const XMVECTOR origin = XMVectorZero();
+
+    // Right-handed rotation: +90 degrees around +Z turns +X into +Y (the shader rotates the same way).
+    const XMFLOAT4 quarterTurn = RotationZ(90.0f);
+    CHECK(Near3(Store3(XMVector3Rotate(g_XMIdentityR0, XMLoadFloat4(&quarterTurn))), 0, 1, 0));
+
+    Transform t;
+    t.position = {2.0f, 0.0f, 0.0f};
+    CHECK(Near3(Translated(t, XMVectorSet(1, 2, 3, 0)).position, 3, 2, 3));
+
+    // Rotating about a pivot turns both the offset and the orientation.
+    const XMVECTOR quarterZ = XMQuaternionRotationNormal(g_XMIdentityR2, XM_PIDIV2);
+    const Transform turned = RotatedAbout(t, origin, quarterZ);
+    CHECK(Near3(turned.position, 0, 2, 0));
+    const XMFLOAT3 halfOne{1.0f, 1.0f, 1.0f};
+    CHECK(Near3(Store3(ItemMatrix(turned, halfOne).r[0]), 0, 1, 0)); // local +X now points along world +Y
+
+    // A second rotation applies on top of the first, in world space: local +X goes Y -> Z.
+    const Transform twice = RotatedAbout(turned, XMLoadFloat3(&turned.position), XMQuaternionRotationNormal(g_XMIdentityR0, XM_PIDIV2));
+    CHECK(Near3(twice.position, 0, 2, 0)); // rotated about its own position
+    CHECK(Near3(Store3(ItemMatrix(twice, halfOne).r[0]), 0, 0, 1));
+    CHECK(Near(XMVectorGetX(XMQuaternionLength(XMLoadFloat4(&twice.rotation))), 1.0f));
+
+    // Scale about a pivot along world axes.
+    const Transform stretched = ScaledAbout(t, origin, XMQuaternionIdentity(), XMVectorSet(2, 1, 1, 0));
+    CHECK(Near3(stretched.position, 4, 0, 0));
+    CHECK(Near3(stretched.scale, 2, 1, 1));
+    // A rotated item takes each factor on its local axis that lines up with the frame axis:
+    // after +90 degrees around Z, its local Y lies along world X.
+    const Transform rotatedStretched = ScaledAbout(turned, origin, XMQuaternionIdentity(), XMVectorSet(2, 1, 1, 0));
+    CHECK(Near3(rotatedStretched.scale, 1, 2, 1));
+    CHECK(Near3(rotatedStretched.position, 0, 2, 0)); // offset along Y: unaffected by an X factor
+    // In the item's own frame, the factor goes to the matching local axis.
+    const Transform localStretched = ScaledAbout(turned, XMLoadFloat3(&turned.position), XMLoadFloat4(&turned.rotation),
+                                                 XMVectorSet(3, 1, 1, 0));
+    CHECK(Near3(localStretched.scale, 3, 1, 1) && Near3(localStretched.position, 0, 2, 0));
+    // Never collapses to zero.
+    CHECK(ScaledAbout(t, origin, XMQuaternionIdentity(), XMVectorZero()).scale.x == kMinScale);
+
+    // Scene storage: version bumps only on change, groups have no transform, world bounds rotate.
+    SceneTree tree;
+    const NodeId group = tree.CreateGroup("G");
+    const NodeId wall = tree.CreateItem("Wall", NodeKind::Brush, Bounds{{1, 2, 3}, {2.0f, 0.1f, 1.5f}}, group);
+    const uint32_t index = tree.IndexOf(wall);
+    CHECK(Near3(tree.TransformAt(index).position, 1, 2, 3));
+    CHECK(Near3(tree.WorldBoundsAt(index).halfExtents, 2.0f, 0.1f, 1.5f));
+    const uint64_t renderVersion = tree.RenderVersion();
+    uint64_t version = tree.TransformVersion();
+    Transform wallTransform = tree.TransformAt(index);
+    tree.SetTransform(wall, wallTransform);
+    CHECK(tree.TransformVersion() == version && tree.TransformChanges().empty()); // unchanged value
+    wallTransform.rotation = RotationZ(90.0f);
+    tree.SetTransform(wall, wallTransform);
+    CHECK(tree.TransformVersion() > version);
+    CHECK(tree.RenderVersion() == renderVersion); // moving needs no full rebuild...
+    CHECK(tree.TransformChanges().size() == 1 && tree.TransformChanges()[0] == wall); // ...just a patch
+    CHECK(Near3(tree.WorldBoundsAt(index).halfExtents, 0.1f, 2.0f, 1.5f));
+    CHECK(Near3(tree.WorldBoundsAt(index).center, 1, 2, 3));
+    version = tree.TransformVersion();
+    tree.SetTransform(group, Transform{});
+    CHECK(tree.TransformVersion() == version);
+    tree.SetTransform(kInvalidNode, Transform{}); // ignored
+    CHECK(tree.Validate());
+
+    // Other render changes clear the log (consumers rebuild then).
+    tree.SetSelected(wall, true);
+    CHECK(tree.RenderVersion() > renderVersion && tree.TransformChanges().empty());
+    // A long drag can't grow the log without bound: past its cap it turns into one full rebuild.
+    const uint64_t beforeDrag = tree.RenderVersion();
+    for (int frame = 0; frame < 5000; ++frame) {
+        wallTransform.position.x = float(frame);
+        tree.SetTransform(wall, wallTransform);
+    }
+    CHECK(tree.RenderVersion() > beforeDrag);
+    CHECK(tree.TransformChanges().size() <= 4096);
+}
+
+// Click selection: exact mesh shapes, rotation and scale, hidden items, volumes behind solids.
+void TestPicking()
+{
+    using namespace DirectX;
+    SceneTree tree;
+    const NodeId cube = tree.CreateItem("Cube", NodeKind::Brush, Bounds{{0, 0, 0}, {1, 1, 1}});
+    const NodeId sphere = tree.CreateItem("Sphere", NodeKind::Mesh, Bounds{{5, 0, 0}, {1, 1, 1}}, kInvalidNode, MeshId::Sphere);
+    const NodeId wall = tree.CreateItem("Wall", NodeKind::Brush, Bounds{{-20, 0, 0}, {2.0f, 0.1f, 1.5f}});
+    const NodeId flat = tree.CreateItem("Flat", NodeKind::Brush, Bounds{{40, 0, 0}, {1.0f, 1.0f, 0.0f}});
+    const MeshLibrary meshes;
+
+    const auto pick = [&](XMFLOAT3 origin, XMFLOAT3 direction) {
+        Ray ray{origin, {}};
+        XMStoreFloat3(&ray.direction, XMVector3Normalize(XMLoadFloat3(&direction)));
+        return PickItem(tree, meshes, ray);
+    };
+
+    PickHit hit = pick({-10, 0, 0}, {1, 0, 0}); // the wall at x = -20 is behind the ray
+    CHECK(hit.node == cube && Near(hit.distance, 9.0f));
+    CHECK(pick({5, -10, 0.5f}, {0, 1, 0}).node == sphere);
+    // Through the corner of the sphere's box but outside the sphere: the mesh decides, not the box.
+    CHECK(!pick({5.9f, -10, 0.9f}, {0, 1, 0}));
+    CHECK(!pick({0, -10, 3}, {0, 1, 0})); // above everything
+    CHECK(!pick({0, 10, 0}, {0, 1, 0}));  // pointing away
+    CHECK(!pick({40, 0, 10}, {0, 0, -1})); // zero-thickness item is skipped, not divided by zero
+
+    // Wall along X: hit at x = -18.5, missed once it is turned to run along Y.
+    CHECK(pick({-18.5f, -10, 0}, {0, 1, 0}).node == wall);
+    Transform t = tree.TransformAt(tree.IndexOf(wall));
+    t.rotation = RotationZ(90.0f);
+    tree.SetTransform(wall, t);
+    CHECK(!pick({-18.5f, -10, 0}, {0, 1, 0}));
+    hit = pick({-20, -10, 0}, {0, 1, 0});
+    CHECK(hit.node == wall && Near(hit.distance, 8.0f, 1e-3f)); // enters at y = -2
+    // Scaled 2x along its own Y axis, which now lies along world X: 0.2 m thick instead of 0.1 m.
+    t.scale = {1.0f, 2.0f, 1.0f};
+    tree.SetTransform(wall, t);
+    CHECK(pick({-20.15f, -10, 0}, {0, 1, 0}).node == wall);
+    CHECK(!pick({-20.25f, -10, 0}, {0, 1, 0}));
+
+    // Hidden items can't be clicked.
+    tree.SetVisible(cube, false);
+    CHECK(pick({-10, 0, 0}, {1, 0, 0}).node == sphere);
+    tree.SetVisible(cube, true);
+
+    // A trigger volume around the cube: the solid cube still wins even though the volume is nearer;
+    // where no solid is hit, the volume is.
+    const NodeId volume = tree.CreateItem("Trigger", NodeKind::Entity, Bounds{{0, 0, 0}, {3, 3, 3}}, kInvalidNode, MeshId::None);
+    CHECK(pick({-10, 0, 0}, {1, 0, 0}).node == cube);
+    CHECK(pick({-10, 0, 2}, {1, 0, 0}).node == volume);
+    hit = pick({0, 0, 2}, {1, 0, 0}); // starting inside the volume: hit where the ray leaves it
+    CHECK(hit.node == volume && Near(hit.distance, 3.0f));
+    (void)flat;
+}
+
+// ---- Model import
+
+std::filesystem::path TestDir()
+{
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "LevelMindedTests";
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+void WriteFile(const std::filesystem::path& path, const void* data, size_t size)
+{
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
+}
+
+void WriteText(const std::filesystem::path& path, const std::string& text)
+{
+    WriteFile(path, text.data(), text.size());
+}
+
+std::string Base64(const std::vector<uint8_t>& data)
+{
+    static const char* kAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    for (size_t i = 0; i < data.size(); i += 3) {
+        const uint32_t chunk = (uint32_t(data[i]) << 16) | (i + 1 < data.size() ? uint32_t(data[i + 1]) << 8 : 0u) |
+                               (i + 2 < data.size() ? uint32_t(data[i + 2]) : 0u);
+        out += kAlphabet[(chunk >> 18) & 63];
+        out += kAlphabet[(chunk >> 12) & 63];
+        out += i + 1 < data.size() ? kAlphabet[(chunk >> 6) & 63] : '=';
+        out += i + 2 < data.size() ? kAlphabet[chunk & 63] : '=';
+    }
+    return out;
+}
+
+template <typename T>
+void Append(std::vector<uint8_t>& bytes, const T* values, size_t count)
+{
+    const auto* raw = reinterpret_cast<const uint8_t*>(values);
+    bytes.insert(bytes.end(), raw, raw + count * sizeof(T));
+}
+
+// A unit quad in glTF's XY plane, facing +Z, counter-clockwise: positions, normals, uint16 indices.
+std::vector<uint8_t> QuadBuffer(bool withNormals)
+{
+    const float positions[] = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
+    const float normals[] = {0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1};
+    const uint16_t indices[] = {0, 1, 2, 0, 2, 3};
+    std::vector<uint8_t> bytes;
+    Append(bytes, positions, 12);
+    if (withNormals)
+        Append(bytes, normals, 12);
+    Append(bytes, indices, 6);
+    return bytes;
+}
+
+// glTF JSON for QuadBuffer: `nodes` is the JSON array of nodes (node 0 is the scene root).
+std::string QuadGltf(const std::string& bufferJson, bool withNormals, const std::string& nodes)
+{
+    const int indexOffset = withNormals ? 96 : 48;
+    std::string json = R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":)" + nodes +
+                       R"(,"meshes":[{"primitives":[{"attributes":{"POSITION":0)";
+    json += withNormals ? R"(,"NORMAL":1},"indices":2,"material":0}]}],)" : R"(},"indices":1,"material":0}]}],)";
+    json += R"("materials":[{"pbrMetallicRoughness":{"baseColorFactor":[1,0,0,1]},"doubleSided":true}],)";
+    json += R"("buffers":[)" + bufferJson + "],";
+    json += R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":48})";
+    if (withNormals)
+        json += R"(,{"buffer":0,"byteOffset":48,"byteLength":48})";
+    json += R"(,{"buffer":0,"byteOffset":)" + std::to_string(indexOffset) + R"(,"byteLength":12}],)";
+    json += R"("accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[0,0,0],"max":[1,1,0]})";
+    if (withNormals)
+        json += R"(,{"bufferView":1,"componentType":5126,"count":4,"type":"VEC3"})";
+    json += R"(,{"bufferView":)" + std::to_string(withNormals ? 2 : 1) + R"(,"componentType":5123,"count":6,"type":"SCALAR"}]})";
+    return json;
+}
+
+// Every triangle's winding agrees with its vertex normals (counter-clockwise seen from outside).
+bool WindingMatchesNormals(const ImportedModel& model)
+{
+    for (size_t t = 0; t + 2 < model.indices.size(); t += 3) {
+        const MeshVertex& a = model.vertices[model.indices[t]];
+        const MeshVertex& b = model.vertices[model.indices[t + 1]];
+        const MeshVertex& c = model.vertices[model.indices[t + 2]];
+        const DirectX::XMVECTOR face = DirectX::XMVector3Cross(
+            DirectX::XMVectorSubtract(DirectX::XMLoadFloat3(&b.position), DirectX::XMLoadFloat3(&a.position)),
+            DirectX::XMVectorSubtract(DirectX::XMLoadFloat3(&c.position), DirectX::XMLoadFloat3(&a.position)));
+        float agreement = 0.0f;
+        for (const MeshVertex* v : {&a, &b, &c})
+            agreement += DirectX::XMVectorGetX(DirectX::XMVector3Dot(face, DirectX::XMLoadFloat3(&v->normal)));
+        if (!(agreement > 0.0f))
+            return false;
+    }
+    return true;
+}
+
+bool InsideUnitBox(const ImportedModel& model)
+{
+    for (const MeshVertex& v : model.vertices)
+        if (std::fabs(v.position.x) > 1.0001f || std::fabs(v.position.y) > 1.0001f || std::fabs(v.position.z) > 1.0001f)
+            return false;
+    return true;
+}
+
+void TestImportObj()
+{
+    const std::filesystem::path dir = TestDir();
+    // A 2 x 4 x 6 box in OBJ's Y-up space (x width, y height, z depth): quads, no normals, one
+    // material, the last face with relative (negative) indices.
+    WriteText(dir / "box.mtl", "newmtl Purple\nKd 0.5 0.25 1.0\n");
+    WriteText(dir / "box.obj",
+              "mtllib box.mtl\n"
+              "v -1 -2 3\nv 1 -2 3\nv 1 2 3\nv -1 2 3\nv -1 -2 -3\nv 1 -2 -3\nv 1 2 -3\nv -1 2 -3\n"
+              "usemtl Purple\n"
+              "f 1 2 3 4\nf 6 5 8 7\nf 2 6 7 3\nf 5 1 4 8\nf 4 3 7 8\nf -4 -3 -7 -8\n");
+    const ImportResult result = ImportModel(dir / "box.obj");
+    CHECK(result.ok);
+    const ImportedModel& model = result.model;
+    CHECK(model.name == "box" && std::string(model.format) == "OBJ");
+    CHECK(model.indices.size() == 36); // 6 quads -> 12 triangles
+    CHECK(model.vertices.size() == 8); // corners welded (same position, no normal, same material)
+    // Y-up -> Z-up: the 4 m height becomes Z, the 6 m depth becomes Y.
+    CHECK(Near3(model.halfExtents, 1.0f, 3.0f, 2.0f));
+    CHECK(InsideUnitBox(model));
+    CHECK(WindingMatchesNormals(model));
+    const uint32_t purple = model.vertices[0].color; // Kd (linear) -> sRGB
+    CHECK((purple & 0xFF) == 188 && ((purple >> 8) & 0xFF) == 137 && ((purple >> 16) & 0xFF) == 255);
+    CHECK(model.traits == 0);
+
+    // It can be added to the mesh library and clicked like a built-in mesh.
+    MeshLibrary meshes;
+    const uint64_t version = meshes.Version();
+    const MeshId id = meshes.Add(model.vertices, model.indices, model.traits);
+    CHECK(id == MeshId::BuiltinCount && IsImportedMesh(id) && meshes.Version() > version);
+    CHECK(meshes.Count() == kBuiltinMeshCount + 1);
+    CHECK(meshes.Get(id).range.indexCount == 36 && meshes.Get(id).range.vertexCount == 8);
+    CHECK(meshes.Vertices().size() == size_t(meshes.Get(id).range.baseVertex) + 8);
+    SceneTree tree;
+    const NodeId item = tree.CreateItem("Box", NodeKind::Mesh, Bounds{{0, 0, 0}, model.halfExtents}, kInvalidNode, id);
+    Ray ray{{0.0f, -10.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    const PickHit hit = PickItem(tree, meshes, ray);
+    CHECK(hit.node == item && Near(hit.distance, 7.0f, 1e-3f)); // front face at y = -3
+
+    // Invalid meshes are refused.
+    const uint32_t badIndices[] = {0, 1, 99};
+    CHECK(meshes.Add(model.vertices, badIndices) == MeshId::None);
+    CHECK(meshes.Add({}, {}) == MeshId::None);
+
+    // Non-ASCII file names work (the loaders get UTF-8 paths; files are opened with wide-char APIs).
+    const std::filesystem::path unicode = dir / std::filesystem::path(u8"modèle_ü.obj");
+    std::filesystem::copy_file(dir / "box.obj", unicode, std::filesystem::copy_options::overwrite_existing);
+    const ImportResult unicodeResult = ImportModel(unicode);
+    CHECK(unicodeResult.ok && unicodeResult.model.indices.size() == 36);
+    CHECK(unicodeResult.model.name == "mod\xC3\xA8le_\xC3\xBC");
+
+    // Errors are reported, not crashed on.
+    WriteText(dir / "empty.obj", "# nothing here\nv 0 0 0\n");
+    const ImportResult empty = ImportModel(dir / "empty.obj");
+    CHECK(!empty.ok && !empty.error.empty() && empty.model.vertices.empty());
+    CHECK(!ImportModel(dir / "missing.obj").ok);
+    CHECK(!ImportModel(dir / "box.mtl").ok); // unsupported extension
+    CHECK(IsImportableModel("a/b/Model.GLB") && IsImportableModel("x.obj") && !IsImportableModel("x.fbx"));
+}
+
+void TestImportGltf()
+{
+    const std::filesystem::path dir = TestDir();
+    // Node 0 scales by (2, 1, 1), its child node 1 by (1, 3, 1) and holds the quad: the baked quad
+    // is 2 x 3 in glTF's XY plane, which is the XZ plane after the Z-up conversion.
+    const std::string nested = R"([{"children":[1],"scale":[2,1,1]},{"mesh":0,"scale":[1,3,1]}])";
+    const std::vector<uint8_t> buffer = QuadBuffer(true);
+    const std::string embedded = R"({"byteLength":)" + std::to_string(buffer.size()) +
+                                 R"(,"uri":"data:application/octet-stream;base64,)" + Base64(buffer) + R"("})";
+    WriteText(dir / "quad.gltf", QuadGltf(embedded, true, nested));
+    ImportResult result = ImportModel(dir / "quad.gltf");
+    CHECK(result.ok);
+    if (result.ok) {
+        const ImportedModel& model = result.model;
+        CHECK(std::string(model.format) == "glTF" && model.skippedPrimitives == 0);
+        CHECK(model.indices.size() == 6 && model.vertices.size() == 4);
+        CHECK(Near(model.halfExtents.x, 1.0f) && Near(model.halfExtents.z, 1.5f) && model.halfExtents.y < 0.01f);
+        CHECK(InsideUnitBox(model) && WindingMatchesNormals(model));
+        for (const MeshVertex& v : model.vertices)
+            CHECK(Near3(v.normal, 0.0f, -1.0f, 0.0f)); // glTF +Z (towards the viewer) is -Y in Z-up
+        CHECK(model.vertices[0].color == 0xFF0000FFu);  // baseColorFactor red, opaque
+        CHECK((model.traits & kMeshTraitDoubleSided) != 0);
+    }
+
+    // The same file as binary glTF (.glb) with an external-free BIN chunk.
+    {
+        const std::string json = QuadGltf(R"({"byteLength":)" + std::to_string(buffer.size()) + "}", true, nested);
+        std::string paddedJson = json;
+        while (paddedJson.size() % 4)
+            paddedJson += ' ';
+        std::vector<uint8_t> bin = buffer;
+        while (bin.size() % 4)
+            bin.push_back(0);
+        std::vector<uint8_t> glb;
+        const uint32_t header[3] = {0x46546C67u, 2u, uint32_t(12 + 8 + paddedJson.size() + 8 + bin.size())};
+        Append(glb, header, 3);
+        const uint32_t jsonChunk[2] = {uint32_t(paddedJson.size()), 0x4E4F534Au};
+        Append(glb, jsonChunk, 2);
+        Append(glb, paddedJson.data(), paddedJson.size());
+        const uint32_t binChunk[2] = {uint32_t(bin.size()), 0x004E4942u};
+        Append(glb, binChunk, 2);
+        Append(glb, bin.data(), bin.size());
+        WriteFile(dir / "quad.glb", glb.data(), glb.size());
+        const ImportResult glbResult = ImportModel(dir / "quad.glb");
+        CHECK(glbResult.ok && glbResult.model.indices.size() == 6 && Near(glbResult.model.halfExtents.z, 1.5f));
+    }
+
+    // External .bin buffer next to the .gltf, and a mirrored node (negative scale): winding must be
+    // flipped back so the quad still faces the way its normals say.
+    WriteFile(dir / "quad.bin", buffer.data(), buffer.size());
+    const std::string external = R"({"byteLength":)" + std::to_string(buffer.size()) + R"(,"uri":"quad.bin"})";
+    WriteText(dir / "mirrored.gltf", QuadGltf(external, true, R"([{"mesh":0,"scale":[-1,1,1]}])"));
+    result = ImportModel(dir / "mirrored.gltf");
+    CHECK(result.ok && WindingMatchesNormals(result.model));
+
+    // No normals: flat normals are generated, one vertex per triangle corner.
+    const std::vector<uint8_t> bare = QuadBuffer(false);
+    const std::string bareBuffer = R"({"byteLength":)" + std::to_string(bare.size()) +
+                                   R"(,"uri":"data:application/octet-stream;base64,)" + Base64(bare) + R"("})";
+    WriteText(dir / "flat.gltf", QuadGltf(bareBuffer, false, R"([{"mesh":0}])"));
+    result = ImportModel(dir / "flat.gltf");
+    CHECK(result.ok && result.model.vertices.size() == 6 && WindingMatchesNormals(result.model));
+
+    // Broken files and missing buffers are reported.
+    WriteText(dir / "broken.gltf", "{ this is not json");
+    result = ImportModel(dir / "broken.gltf");
+    CHECK(!result.ok && !result.error.empty());
+    WriteText(dir / "nobin.gltf", QuadGltf(R"({"byteLength":108,"uri":"does-not-exist.bin"})", true, R"([{"mesh":0}])"));
+    result = ImportModel(dir / "nobin.gltf");
+    CHECK(!result.ok && !result.error.empty());
+}
+
+void TestAssetCatalog()
+{
+    AssetCatalog catalog;
+    const size_t builtins = catalog.Items().size();
+    CHECK(builtins == ItemCatalog().size() && !catalog.IsImported(0));
+    const std::filesystem::path source = TestDir() / "box.obj";
+    const size_t a = catalog.AddImported("Cube", "imported", "OBJ", MeshId::BuiltinCount, {1, 2, 3}, source);
+    CHECK(a == builtins && catalog.IsImported(a));
+    CHECK(std::string(catalog.Items()[a].name) == "Cube (2)"); // "Cube" is a built-in item
+    const size_t b = catalog.AddImported("Cube", "imported", "OBJ", MeshId::BuiltinCount, {1, 2, 3}, TestDir() / "x.obj");
+    CHECK(std::string(catalog.Items()[b].name) == "Cube (3)");
+    CHECK(std::string(catalog.Items()[a].name) == "Cube (2)"); // names stay valid as the catalog grows
+    CHECK(catalog.FindSource(source) == a);
+    CHECK(catalog.FindSource(TestDir() / "BOX.OBJ") == a);           // case-insensitive
+    CHECK(catalog.FindSource(TestDir() / "sub" / ".." / "box.obj") == a); // any spelling of the path
+    CHECK(catalog.FindSource(TestDir() / "other.obj") == AssetCatalog::npos);
+    CHECK(catalog.Source(a) == source && catalog.Source(0).empty());
 }
 
 template <typename F>
@@ -435,6 +856,17 @@ void Benchmark()
     std::printf("  hide/show whole tree (propagate)  %8.1f us\n", hideUs);
     std::printf("  select/deselect whole tree        %8.1f us\n", selectUs);
     std::printf("  move 1,011-node group to the end  %8.1f us\n", moveUs);
+
+    // Click picking over a 100,000-item level (every item's box is tested).
+    SceneTree level;
+    BuildStressLevel(level, 100000);
+    const MeshLibrary meshes;
+    const float firstRowY = -317.0f * 2.5f * 0.5f; // BuildStressLevel: 317 x 317 grid, first row
+    const Ray ray{{0.0f, firstRowY, 0.5f}, {1.0f, 0.0f, 0.0f}};
+    PickHit hit;
+    const double pickUs = TimeMicroseconds([&] { hit = PickItem(level, meshes, ray); }, 10);
+    CHECK(hit && Near(hit.distance, 29.5f, 1e-3f) && hit.itemsTested == 100000u);
+    std::printf("  pick (ray vs 100,000 items)       %8.1f us\n", pickUs);
 }
 
 } // namespace
@@ -451,6 +883,11 @@ int main()
     TestNamesAndVersions();
     TestCatalogSpawn();
     TestMeshWinding();
+    TestTransforms();
+    TestPicking();
+    TestImportObj();
+    TestImportGltf();
+    TestAssetCatalog();
     Benchmark();
 
     std::printf("%d checks, %d failures\n", g_checks, g_failures);

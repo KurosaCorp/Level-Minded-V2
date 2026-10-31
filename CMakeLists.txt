@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.25)
 project(LevelMinded
     VERSION 1.0.0
     DESCRIPTION "Optimized 3D map design tool"
-    LANGUAGES CXX)
+    LANGUAGES C CXX)
 
 if(NOT WIN32 OR NOT MSVC)
     message(FATAL_ERROR "LevelMinded currently targets Windows with MSVC (Win32 + Direct3D 11).")
@@ -26,16 +26,24 @@ include(Shaders)
 # Data model and CPU-side geometry (no UI or GPU dependencies), shared by the editor and the tests.
 add_library(levelminded_core STATIC
     src/core/MeshId.h
+    src/import/ModelImporter.cpp
+    src/import/ModelImporter.h
     src/render/MeshGeometry.cpp
     src/render/MeshGeometry.h
+    src/render/MeshLibrary.cpp
+    src/render/MeshLibrary.h
     src/scene/ItemCatalog.cpp
     src/scene/ItemCatalog.h
     src/scene/MockLevel.cpp
     src/scene/MockLevel.h
+    src/scene/Picking.cpp
+    src/scene/Picking.h
     src/scene/SceneTree.cpp
     src/scene/SceneTree.h
+    src/scene/Transform.h
 )
 target_include_directories(levelminded_core PUBLIC src)
+target_link_libraries(levelminded_core PRIVATE lm_loaders)
 lm_apply_project_warnings(levelminded_core)
 
 # Version-stamped resources, generated from res/*.in.
@@ -69,6 +77,8 @@ add_executable(LevelMinded WIN32
     src/editor/HierarchyPanel.cpp
     src/editor/HierarchyPanel.h
     src/editor/NodeStyle.h
+    src/editor/TransformGizmo.cpp
+    src/editor/TransformGizmo.h
     src/editor/Viewport.cpp
     src/editor/Viewport.h
     src/platform/Window.cpp
@@ -102,7 +112,7 @@ lm_add_shader(LevelMinded src/render/shaders/Mesh.hlsl  PSMain ps_5_0 g_MeshPS)
 lm_add_shader(LevelMinded src/render/shaders/Mesh.hlsl  WirePSMain ps_5_0 g_WirePS)
 
 target_include_directories(LevelMinded PRIVATE src)
-target_link_libraries(LevelMinded PRIVATE levelminded_core imgui d3d11 dxgi dwmapi shell32)
+target_link_libraries(LevelMinded PRIVATE levelminded_core imgui d3d11 dxgi dwmapi shell32 comdlg32)
 target_compile_definitions(LevelMinded PRIVATE
     LM_VERSION_STRING="${PROJECT_VERSION}"
     LM_BUILD_CONFIG="$<IF:$<BOOL:${LM_SHIP_BUILD}>,Release build,$<CONFIG>>")
@@ -126,3 +136,5 @@ add_test(NAME SceneTree COMMAND LevelMindedTests)
 install(TARGETS LevelMinded RUNTIME DESTINATION .)
 install(FILES "${LM_GENERATED_DIR}/README.txt" DESTINATION .)
 install(FILES "${imgui_SOURCE_DIR}/LICENSE.txt" DESTINATION . RENAME THIRD_PARTY_LICENSE_DearImGui.txt)
+install(FILES "${cgltf_SOURCE_DIR}/LICENSE" DESTINATION . RENAME THIRD_PARTY_LICENSE_cgltf.txt)
+install(FILES "${fast_obj_SOURCE_DIR}/LICENSE" DESTINATION . RENAME THIRD_PARTY_LICENSE_fast_obj.txt)

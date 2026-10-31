@@ -10,6 +10,7 @@ namespace lm {
 namespace {
 
 constexpr float kTwoPi = 6.28318530718f;
+constexpr uint32_t kWhite = 0xFFFFFFFFu; // built-in meshes take their color from the instance
 
 XMFLOAT3 Add(XMFLOAT3 a, XMFLOAT3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
 XMFLOAT3 Scale(XMFLOAT3 a, float s) { return {a.x * s, a.y * s, a.z * s}; }
@@ -35,12 +36,12 @@ public:
         m_geometry.ranges[static_cast<uint32_t>(m_mesh)] = m_range;
     }
 
-    uint16_t Vertex(XMFLOAT3 position, XMFLOAT3 normal)
+    uint32_t Vertex(XMFLOAT3 position, XMFLOAT3 normal)
     {
-        m_geometry.vertices.push_back({position, normal});
-        return static_cast<uint16_t>(m_geometry.vertices.size() - 1 - static_cast<size_t>(m_range.baseVertex));
+        m_geometry.vertices.push_back({position, normal, kWhite});
+        return static_cast<uint32_t>(m_geometry.vertices.size() - 1 - static_cast<size_t>(m_range.baseVertex));
     }
-    void Triangle(uint16_t a, uint16_t b, uint16_t c)
+    void Triangle(uint32_t a, uint32_t b, uint32_t c)
     {
         m_geometry.indices.insert(m_geometry.indices.end(), {a, b, c});
     }
@@ -48,10 +49,10 @@ public:
     // Flat quad facing `normal`. `u` and `v` are half-size edge vectors with cross(u, v) along normal.
     void Quad(XMFLOAT3 center, XMFLOAT3 normal, XMFLOAT3 u, XMFLOAT3 v)
     {
-        const uint16_t a = Vertex(Add(center, Scale(Add(u, v), -1.0f)), normal);
-        const uint16_t b = Vertex(Add(center, Add(u, Scale(v, -1.0f))), normal);
-        const uint16_t c = Vertex(Add(center, Add(u, v)), normal);
-        const uint16_t d = Vertex(Add(center, Add(Scale(u, -1.0f), v)), normal);
+        const uint32_t a = Vertex(Add(center, Scale(Add(u, v), -1.0f)), normal);
+        const uint32_t b = Vertex(Add(center, Add(u, Scale(v, -1.0f))), normal);
+        const uint32_t c = Vertex(Add(center, Add(u, v)), normal);
+        const uint32_t d = Vertex(Add(center, Add(Scale(u, -1.0f), v)), normal);
         Triangle(a, b, c);
         Triangle(a, c, d);
     }
@@ -74,7 +75,7 @@ public:
     // Unit sphere around the origin.
     void Sphere(int rings, int segments)
     {
-        const uint16_t first = Vertex({0, 0, -1}, {0, 0, -1});
+        const uint32_t first = Vertex({0, 0, -1}, {0, 0, -1});
         for (int i = 0; i <= rings; ++i) {
             const float phi = -XM_PIDIV2 + XM_PI * float(i) / float(rings);
             for (int j = 0; j <= segments; ++j) {
@@ -88,10 +89,10 @@ public:
         const int stride = segments + 1;
         for (int i = 0; i < rings; ++i) {
             for (int j = 0; j < segments; ++j) {
-                const auto a = static_cast<uint16_t>(first + i * stride + j);
-                const auto b = static_cast<uint16_t>(a + 1);
-                const auto c = static_cast<uint16_t>(b + stride);
-                const auto d = static_cast<uint16_t>(a + stride);
+                const auto a = static_cast<uint32_t>(first + i * stride + j);
+                const auto b = static_cast<uint32_t>(a + 1);
+                const auto c = static_cast<uint32_t>(b + stride);
+                const auto d = static_cast<uint32_t>(a + stride);
                 if (i != 0)
                     Triangle(a, b, c); // degenerate at the south pole
                 if (i != rings - 1)
@@ -104,19 +105,19 @@ public:
     void Cylinder(XMFLOAT3 base, XMFLOAT3 axis, XMFLOAT3 u, XMFLOAT3 v, float radius, float length, int segments)
     {
         const XMFLOAT3 top = Add(base, Scale(axis, length));
-        uint16_t firstSide = 0;
+        uint32_t firstSide = 0;
         for (int j = 0; j <= segments; ++j) {
             const XMFLOAT3 dir = RingDirection(u, v, j, segments);
-            const uint16_t bottom = Vertex(Add(base, Scale(dir, radius)), dir);
+            const uint32_t bottom = Vertex(Add(base, Scale(dir, radius)), dir);
             Vertex(Add(top, Scale(dir, radius)), dir);
             if (j == 0)
                 firstSide = bottom;
         }
         for (int j = 0; j < segments; ++j) {
-            const auto b0 = static_cast<uint16_t>(firstSide + 2 * j);
-            const auto t0 = static_cast<uint16_t>(b0 + 1);
-            const auto b1 = static_cast<uint16_t>(b0 + 2);
-            const auto t1 = static_cast<uint16_t>(b0 + 3);
+            const auto b0 = static_cast<uint32_t>(firstSide + 2 * j);
+            const auto t0 = static_cast<uint32_t>(b0 + 1);
+            const auto b1 = static_cast<uint32_t>(b0 + 2);
+            const auto t1 = static_cast<uint32_t>(b0 + 3);
             Triangle(b0, b1, t1);
             Triangle(b0, t1, t0);
         }
@@ -134,9 +135,9 @@ public:
             const XMFLOAT3 n0 = Normalize(Add(Scale(dir0, length), Scale(axis, radius)));
             const XMFLOAT3 n1 = Normalize(Add(Scale(dir1, length), Scale(axis, radius)));
             const XMFLOAT3 nMid = Normalize(Add(n0, n1));
-            const uint16_t a = Vertex(Add(base, Scale(dir0, radius)), n0);
-            const uint16_t b = Vertex(Add(base, Scale(dir1, radius)), n1);
-            const uint16_t c = Vertex(apex, nMid);
+            const uint32_t a = Vertex(Add(base, Scale(dir0, radius)), n0);
+            const uint32_t b = Vertex(Add(base, Scale(dir1, radius)), n1);
+            const uint32_t c = Vertex(apex, nMid);
             Triangle(a, b, c);
         }
         Disc(base, axis, u, v, radius, segments, false);
@@ -153,13 +154,13 @@ private:
     void Disc(XMFLOAT3 center, XMFLOAT3 axis, XMFLOAT3 u, XMFLOAT3 v, float radius, int segments, bool facingAxis)
     {
         const XMFLOAT3 normal = facingAxis ? axis : Scale(axis, -1.0f);
-        const uint16_t c = Vertex(center, normal);
-        const uint16_t ring = Vertex(Add(center, Scale(RingDirection(u, v, 0, segments), radius)), normal);
+        const uint32_t c = Vertex(center, normal);
+        const uint32_t ring = Vertex(Add(center, Scale(RingDirection(u, v, 0, segments), radius)), normal);
         for (int j = 1; j < segments; ++j)
             Vertex(Add(center, Scale(RingDirection(u, v, j, segments), radius)), normal);
         for (int j = 0; j < segments; ++j) {
-            const auto p0 = static_cast<uint16_t>(ring + j);
-            const auto p1 = static_cast<uint16_t>(ring + (j + 1) % segments);
+            const auto p0 = static_cast<uint32_t>(ring + j);
+            const auto p1 = static_cast<uint32_t>(ring + (j + 1) % segments);
             if (facingAxis)
                 Triangle(c, p0, p1);
             else
@@ -197,7 +198,7 @@ MeshGeometry BuildBuiltinMeshes()
         range.baseVertex = static_cast<int32_t>(geometry.vertices.size());
         for (int i = 0; i < 8; ++i)
             geometry.vertices.push_back({{(i & 1) ? 1.0f : -1.0f, (i & 2) ? 1.0f : -1.0f, (i & 4) ? 1.0f : -1.0f}, {0, 0, 0}});
-        static constexpr uint16_t kEdges[24] = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 1, 3, 4, 6, 5, 7, 0, 4, 1, 5, 2, 6, 3, 7};
+        static constexpr uint32_t kEdges[24] = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 1, 3, 4, 6, 5, 7, 0, 4, 1, 5, 2, 6, 3, 7};
         geometry.indices.insert(geometry.indices.end(), std::begin(kEdges), std::end(kEdges));
         range.indexCount = 24;
         range.vertexCount = 8;

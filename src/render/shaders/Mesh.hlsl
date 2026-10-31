@@ -1,5 +1,5 @@
-// Instanced solid meshes. One draw call per mesh type; per-instance data places, scales and tints
-// each item. Simple editor lighting: key light + sky/ground ambient + a little headlight.
+// Instanced solid meshes. One draw call per mesh type; per-instance data places, rotates,
+// scales and tints each item. Simple editor lighting: key light + sky/ground ambient + a little headlight.
 
 #include "Common.hlsli"
 
@@ -13,7 +13,9 @@ struct VSIn
 {
     float3 position      : POSITION;
     float3 normal        : NORMAL;
+    float4 vertexColor   : COLOR;     // material color of imported models, white for built-ins
     float3 instPosition  : INSTPOS;
+    float4 instRotation  : INSTROT;   // unit quaternion
     float3 instScale     : INSTSCALE;
     float4 instColor     : INSTCOLOR;
     uint   instFlags     : INSTFLAGS;
@@ -24,19 +26,26 @@ struct VSOut
     float4 position : SV_Position;
     float3 worldPos : WORLDPOS;
     float3 normal   : NORMAL;
-    nointerpolation float3 color : COLOR;
+    float3 color : COLOR; // interpolated: imported models may have per-vertex colors
     nointerpolation uint   flags : FLAGS;
 };
+
+// Rotates v by the unit quaternion q.
+float3 QuatRotate(float4 q, float3 v)
+{
+    const float3 t = 2.0 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
+}
 
 VSOut VSMain(VSIn input)
 {
     VSOut output;
-    const float3 world = input.position * input.instScale + input.instPosition;
+    const float3 world = QuatRotate(input.instRotation, input.position * input.instScale) + input.instPosition;
     output.position = mul(float4(world, 1.0), g_ViewProj);
     output.worldPos = world;
-    // Inverse-transpose of an axis-aligned scale is 1 / scale.
-    output.normal = input.normal / max(abs(input.instScale), 1e-4);
-    output.color = input.instColor.rgb;
+    // Inverse-transpose of scale-then-rotate: divide by the scale, then rotate.
+    output.normal = QuatRotate(input.instRotation, input.normal / max(abs(input.instScale), 1e-4) * sign(input.instScale));
+    output.color = input.instColor.rgb * input.vertexColor.rgb;
     output.flags = input.instFlags;
     return output;
 }

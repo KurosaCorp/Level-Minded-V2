@@ -29,6 +29,11 @@ public:
     }
     // Wireframe axis-aligned box (12 lines).
     void AddBox(const DirectX::XMFLOAT3& center, const DirectX::XMFLOAT3& halfExtents, uint32_t rgba);
+    // Wireframe box: the unit box [-1, 1]^3 transformed by `unitToWorld` (12 lines). Returns the index
+    // of its first vertex, for SetBox().
+    uint32_t AddBox(DirectX::FXMMATRIX unitToWorld, uint32_t rgba);
+    // Moves a box added by AddBox (keeps its color). Upload() again to see it.
+    void SetBox(uint32_t firstVertex, DirectX::FXMMATRIX unitToWorld);
     size_t LineCount() const { return m_vertices.size() / 2; }
 
     // Copies the queued lines to the GPU (grows the buffer if needed). Call when the lines changed.

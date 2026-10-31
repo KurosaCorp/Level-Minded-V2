@@ -85,6 +85,13 @@ void EditorCamera::Pan(float dxPixels, float dyPixels, float viewportHeightPixel
     XMStoreFloat3(&m_target, XMVectorAdd(XMLoadFloat3(&m_target), offset));
 }
 
+void EditorCamera::FrameSphere(float radius)
+{
+    // Distance at which the sphere fills ~80% of the vertical field of view.
+    const float distance = radius / std::sin(m_fovY * 0.5f) * 1.25f;
+    m_distance = std::clamp(distance, kMinDistance, kMaxDistance);
+}
+
 void EditorCamera::Dolly(float amount)
 {
     float distance = m_distance * std::exp(-amount);
@@ -106,6 +113,17 @@ void EditorCamera::Move(const XMFLOAT3& localDirection, float distance)
         return;
     direction = XMVector3Normalize(direction);
     XMStoreFloat3(&m_target, XMVectorMultiplyAdd(direction, XMVectorReplicate(distance), XMLoadFloat3(&m_target)));
+}
+
+Ray EditorCamera::ScreenRay(float ndcX, float ndcY, float aspect) const
+{
+    const float tanHalf = std::tan(m_fovY * 0.5f);
+    XMVECTOR direction = XMVectorMultiplyAdd(Right(), XMVectorReplicate(ndcX * tanHalf * aspect), Forward());
+    direction = XMVectorMultiplyAdd(Up(), XMVectorReplicate(ndcY * tanHalf), direction);
+    Ray ray;
+    ray.origin = Eye();
+    XMStoreFloat3(&ray.direction, XMVector3Normalize(direction));
+    return ray;
 }
 
 XMMATRIX EditorCamera::ViewMatrix() const

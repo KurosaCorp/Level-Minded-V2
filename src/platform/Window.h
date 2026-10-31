@@ -3,6 +3,8 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <span>
+#include <string>
 
 namespace lm {
 
@@ -15,6 +17,8 @@ public:
     virtual void OnWindowDpiChanged(float dpiScale) = 0;
     // Called repeatedly while the user drags the window border (the OS runs a modal loop then).
     virtual void OnWindowLiveResize() = 0;
+    // Files dragged from Explorer and dropped onto the window (full paths).
+    virtual void OnFilesDropped(std::span<const std::wstring> paths) = 0;
 
 protected:
     virtual ~WindowEventHandler() = default;

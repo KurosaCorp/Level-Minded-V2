@@ -9,6 +9,7 @@
 #include "g_MeshVS.h"
 #include "g_WirePS.h"
 
+#include <algorithm>
 #include <cstring>
 #include <iterator>
 
@@ -37,17 +38,22 @@ static_assert(sizeof(FrameConstants) % 16 == 0);
 const D3D11_INPUT_ELEMENT_DESC kMeshInputLayout[] = {
     {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
     {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
+    {"COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0},
     {"INSTPOS", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1},
-    {"INSTSCALE", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, 12, D3D11_INPUT_PER_INSTANCE_DATA, 1},
-    {"INSTCOLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 1, 24, D3D11_INPUT_PER_INSTANCE_DATA, 1},
-    {"INSTFLAGS", 0, DXGI_FORMAT_R32_UINT, 1, 28, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+    {"INSTROT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 12, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+    {"INSTSCALE", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, 28, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+    {"INSTCOLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 1, 40, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+    {"INSTFLAGS", 0, DXGI_FORMAT_R32_UINT, 1, 44, D3D11_INPUT_PER_INSTANCE_DATA, 1},
 };
 
 } // namespace
 
-bool ViewportRenderer::Create(ID3D11Device* device)
+bool ViewportRenderer::Create(ID3D11Device* device, const MeshLibrary* meshes)
 {
     m_device = device;
+    m_meshes = meshes;
+    if (!m_meshes)
+        return false;
 
     D3D11_BUFFER_DESC cbDesc{};
     cbDesc.ByteWidth = sizeof(FrameConstants);
@@ -119,44 +125,126 @@ bool ViewportRenderer::CreateMeshResources(ID3D11Device* device)
         FAILED(device->CreateInputLayout(kMeshInputLayout, static_cast<UINT>(std::size(kMeshInputLayout)), g_MeshVS,
                                          sizeof(g_MeshVS), &m_meshLayout)))
         return false;
-
-    const MeshGeometry geometry = BuildBuiltinMeshes();
-    std::memcpy(m_meshRanges, geometry.ranges, sizeof(m_meshRanges));
-    m_wireBoxRange = geometry.wireBox;
-
-    D3D11_BUFFER_DESC desc{};
-    desc.Usage = D3D11_USAGE_IMMUTABLE;
-    desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    desc.ByteWidth = static_cast<UINT>(geometry.vertices.size() * sizeof(MeshVertex));
-    D3D11_SUBRESOURCE_DATA data{geometry.vertices.data(), 0, 0};
-    if (FAILED(device->CreateBuffer(&desc, &data, &m_meshVertices)))
-        return false;
-    desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
-    desc.ByteWidth = static_cast<UINT>(geometry.indices.size() * sizeof(uint16_t));
-    data.pSysMem = geometry.indices.data();
-    return SUCCEEDED(device->CreateBuffer(&desc, &data, &m_meshIndices));
+    return true; // the mesh buffers are created by the first SyncMeshes()
 }
+
+namespace {
+
+// Next power of two >= value (at least `minimum`).
+size_t GrowCapacity(size_t current, size_t needed, size_t minimum)
+{
+    size_t capacity = current ? current : minimum;
+    while (capacity < needed)
+        capacity *= 2;
+    return capacity;
+}
+
+} // namespace
+
+bool ViewportRenderer::SyncMeshes(ID3D11DeviceContext* context)
+{
+    if (m_meshes->Version() == m_meshVersion)
+        return true;
+    const std::span<const MeshVertex> vertices = m_meshes->Vertices();
+    const std::span<const uint32_t> indices = m_meshes->Indices();
+
+    // DEFAULT buffers that grow by doubling. Appended meshes upload only their own range; a buffer is
+    // recreated (and fully re-uploaded) only when it runs out of room.
+    const auto sync = [&](ComPtr<ID3D11Buffer>& buffer, size_t& capacity, size_t& uploaded, const void* data, size_t count,
+                          size_t stride, UINT bind, size_t minimum) {
+        if (count > capacity) {
+            const size_t newCapacity = GrowCapacity(capacity, count, minimum);
+            D3D11_BUFFER_DESC desc{};
+            desc.ByteWidth = static_cast<UINT>(newCapacity * stride);
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.BindFlags = bind;
+            ComPtr<ID3D11Buffer> grown;
+            if (FAILED(m_device->CreateBuffer(&desc, nullptr, &grown)))
+                return false;
+            buffer = grown;
+            capacity = newCapacity;
+            uploaded = 0;
+        }
+        if (count > uploaded) {
+            const D3D11_BOX box{static_cast<UINT>(uploaded * stride), 0, 0, static_cast<UINT>(count * stride), 1, 1};
+            context->UpdateSubresource(buffer.Get(), 0, &box, static_cast<const uint8_t*>(data) + uploaded * stride, 0, 0);
+            m_bytesUploaded += (count - uploaded) * stride;
+            uploaded = count;
+        }
+        return true;
+    };
+    if (!sync(m_meshVertices, m_vertexCapacity, m_uploadedVertices, vertices.data(), vertices.size(), sizeof(MeshVertex),
+              D3D11_BIND_VERTEX_BUFFER, 16 * 1024) ||
+        !sync(m_meshIndices, m_indexCapacity, m_uploadedIndices, indices.data(), indices.size(), sizeof(uint32_t),
+              D3D11_BIND_INDEX_BUFFER, 32 * 1024))
+        return false;
+    m_meshVersion = m_meshes->Version();
+    return true;
+}
+
+namespace {
+
+// InstanceHandle = (bucket << 20) | index: up to 4096 mesh buckets (MeshLibrary::kMaxMeshes) with
+// up to ~1M instances each.
+constexpr uint32_t kHandleIndexBits = 20;
+constexpr uint32_t kHandleIndexMask = (1u << kHandleIndexBits) - 1;
+static_assert(MeshLibrary::kMaxMeshes <= (1u << (32 - kHandleIndexBits)));
+
+} // namespace
 
 void ViewportRenderer::BeginScene()
 {
+    const uint32_t buckets = m_meshes->Count();
+    if (m_instances.size() < buckets) { // a model was imported since the last scene
+        m_instances.resize(buckets);
+        m_dirtyBegin.resize(buckets, 0);
+        m_dirtyEnd.resize(buckets, 0);
+        m_firstInstance.resize(buckets, 0);
+        m_instanceCount.resize(buckets, 0);
+    }
     for (auto& bucket : m_instances)
         bucket.clear();
     m_outlines.clear();
     m_sceneLines.Clear();
 }
 
-void ViewportRenderer::AddMeshInstance(MeshId mesh, const XMFLOAT3& position, const XMFLOAT3& scale, uint32_t rgba,
-                                       uint32_t flags)
+InstanceHandle ViewportRenderer::AddMeshInstance(MeshId mesh, const XMFLOAT3& position, const XMFLOAT4& rotation,
+                                                 const XMFLOAT3& size, uint32_t rgba, uint32_t flags)
 {
     const auto bucket = static_cast<uint32_t>(mesh);
-    if (bucket == 0 || bucket >= kMeshCount) // MeshId::None or invalid
-        return;
-    m_instances[bucket].push_back({position, scale, rgba, flags});
+    if (bucket == 0 || bucket >= m_instances.size() || m_instances[bucket].size() >= kHandleIndexMask) // None or unknown (index never all ones: no clash with kNoInstance)
+        return kNoInstance;
+    m_instances[bucket].push_back({position, rotation, size, rgba, flags});
+    return (bucket << kHandleIndexBits) | static_cast<uint32_t>(m_instances[bucket].size() - 1);
 }
 
-void ViewportRenderer::AddOutline(const XMFLOAT3& center, const XMFLOAT3& halfExtents, uint32_t rgba)
+InstanceHandle ViewportRenderer::AddOutline(const XMFLOAT3& position, const XMFLOAT4& rotation, const XMFLOAT3& size,
+                                            uint32_t rgba)
 {
-    m_outlines.push_back({center, halfExtents, rgba, 0});
+    if (m_outlines.size() >= kHandleIndexMask)
+        return kNoInstance;
+    m_outlines.push_back({position, rotation, size, rgba, 0});
+    return static_cast<uint32_t>(m_outlines.size() - 1); // bucket 0
+}
+
+void ViewportRenderer::UpdateInstance(InstanceHandle handle, const XMFLOAT3& position, const XMFLOAT4& rotation,
+                                      const XMFLOAT3& size)
+{
+    const uint32_t bucket = handle >> kHandleIndexBits;
+    const uint32_t index = handle & kHandleIndexMask;
+    if (handle == kNoInstance || bucket >= m_instances.size() || index >= Bucket(bucket).size())
+        return;
+    Instance& instance = Bucket(bucket)[index];
+    instance.position = position;
+    instance.rotation = rotation;
+    instance.scale = size;
+    if (m_dirtyEnd[bucket] == 0) {
+        m_dirtyBegin[bucket] = index;
+        m_dirtyEnd[bucket] = index + 1;
+    } else {
+        m_dirtyBegin[bucket] = std::min(m_dirtyBegin[bucket], index);
+        m_dirtyEnd[bucket] = std::max(m_dirtyEnd[bucket], index + 1);
+    }
 }
 
 void ViewportRenderer::EndScene()
@@ -164,11 +252,20 @@ void ViewportRenderer::EndScene()
     m_sceneDirty = true;
 }
 
+void ViewportRenderer::UploadInstanceRange(ID3D11DeviceContext* context, const Instance* data, UINT first, UINT count)
+{
+    if (count == 0)
+        return;
+    const D3D11_BOX box{first * UINT(sizeof(Instance)), 0, 0, (first + count) * UINT(sizeof(Instance)), 1, 1};
+    context->UpdateSubresource(m_instanceBuffer.Get(), 0, &box, data, 0, 0);
+    m_bytesUploaded += size_t(count) * sizeof(Instance);
+}
+
 bool ViewportRenderer::UploadScene(ID3D11DeviceContext* context)
 {
     // Lay the buckets out back to back so each draw reads one contiguous instance range.
     size_t total = 0;
-    for (uint32_t mesh = 0; mesh < kMeshCount; ++mesh) {
+    for (size_t mesh = 0; mesh < m_instances.size(); ++mesh) {
         m_firstInstance[mesh] = static_cast<UINT>(total);
         m_instanceCount[mesh] = static_cast<UINT>(m_instances[mesh].size());
         total += m_instances[mesh].size();
@@ -181,11 +278,12 @@ bool ViewportRenderer::UploadScene(ID3D11DeviceContext* context)
         size_t capacity = m_instanceCapacity ? m_instanceCapacity : 1024;
         while (capacity < total)
             capacity *= 2;
+        // DEFAULT usage + UpdateSubresource: lets a moved item upload just its own 48 bytes (a DYNAMIC
+        // buffer can only be rewritten whole with WRITE_DISCARD while the GPU may still read it).
         D3D11_BUFFER_DESC desc{};
         desc.ByteWidth = static_cast<UINT>(capacity * sizeof(Instance));
-        desc.Usage = D3D11_USAGE_DYNAMIC;
+        desc.Usage = D3D11_USAGE_DEFAULT;
         desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         m_instanceBuffer.Reset();
         m_instanceCapacity = 0;
         if (FAILED(m_device->CreateBuffer(&desc, nullptr, &m_instanceBuffer)))
@@ -193,18 +291,11 @@ bool ViewportRenderer::UploadScene(ID3D11DeviceContext* context)
         m_instanceCapacity = capacity;
     }
 
-    if (total > 0) {
-        // Copy each bucket straight into the mapped GPU buffer (no intermediate staging copy).
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        if (FAILED(context->Map(m_instanceBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-            return false;
-        auto* out = static_cast<Instance*>(mapped.pData);
-        for (uint32_t mesh = 0; mesh < kMeshCount; ++mesh)
-            std::memcpy(out + m_firstInstance[mesh], m_instances[mesh].data(), m_instances[mesh].size() * sizeof(Instance));
-        std::memcpy(out + m_firstOutline, m_outlines.data(), m_outlines.size() * sizeof(Instance));
-        context->Unmap(m_instanceBuffer.Get(), 0);
-        m_bytesUploaded += total * sizeof(Instance);
-    }
+    for (size_t mesh = 1; mesh < m_instances.size(); ++mesh)
+        UploadInstanceRange(context, m_instances[mesh].data(), m_firstInstance[mesh], m_instanceCount[mesh]);
+    UploadInstanceRange(context, m_outlines.data(), m_firstOutline, m_outlineCount);
+    for (uint32_t& end : m_dirtyEnd)
+        end = 0; // everything was just uploaded
 
     if (!m_sceneLines.Upload(context))
         return false;
@@ -215,6 +306,7 @@ bool ViewportRenderer::UploadScene(ID3D11DeviceContext* context)
 void ViewportRenderer::BindMeshInput(ID3D11DeviceContext* context)
 {
     m_state.VertexBuffers(context, m_meshVertices.Get(), sizeof(MeshVertex), m_instanceBuffer.Get(), sizeof(Instance));
+    // 32-bit indices: imported models can have more than 65,536 vertices.
     m_state.IndexBuffer(context, m_meshIndices.Get());
     m_state.InputLayout(context, m_meshLayout.Get());
     m_state.VertexShader(context, m_meshVS.Get());
@@ -227,11 +319,30 @@ uint32_t ViewportRenderer::Render(ID3D11DeviceContext* context, const Rect& rect
     m_bytesUploaded = 0;
     if (rect.IsEmpty())
         return 0;
+    if (!SyncMeshes(context))
+        return 0;
 
     if (m_sceneDirty) {
         if (!UploadScene(context))
             return 0;
         m_sceneDirty = false;
+        m_linesDirty = false;
+    } else {
+        // Moved items: upload only the changed range of each bucket.
+        for (uint32_t bucket = 0; bucket < m_dirtyEnd.size(); ++bucket) {
+            if (m_dirtyEnd[bucket] == 0)
+                continue;
+            const UINT first = bucket == 0 ? m_firstOutline : m_firstInstance[bucket];
+            UploadInstanceRange(context, Bucket(bucket).data() + m_dirtyBegin[bucket], first + m_dirtyBegin[bucket],
+                                m_dirtyEnd[bucket] - m_dirtyBegin[bucket]);
+            m_dirtyEnd[bucket] = 0;
+        }
+        if (m_linesDirty) {
+            if (!m_sceneLines.Upload(context))
+                return 0;
+            m_bytesUploaded += m_sceneLines.UploadedVertexCount() * size_t(LineBatch::kStride);
+            m_linesDirty = false;
+        }
     }
 
     const XMMATRIX viewProj = XMMatrixMultiply(XMLoadFloat4x4(&camera.view), XMLoadFloat4x4(&camera.projection));
@@ -260,21 +371,24 @@ uint32_t ViewportRenderer::Render(ID3D11DeviceContext* context, const Rect& rect
 
     uint32_t drawCalls = 0;
 
-    // 1. Opaque meshes: one instanced draw per mesh type.
+    // 1. Opaque meshes: one instanced draw per mesh type in use. Double-sided meshes (imported
+    //    models whose materials ask for it) are drawn without back-face culling.
+    const uint32_t buckets = static_cast<uint32_t>(m_instanceCount.size());
     bool anyMesh = false;
-    for (uint32_t mesh = 1; mesh < kMeshCount; ++mesh)
+    for (uint32_t mesh = 1; mesh < buckets; ++mesh)
         anyMesh |= m_instanceCount[mesh] > 0;
     if (anyMesh) {
         BindMeshInput(context);
         m_state.Topology(context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         m_state.PixelShader(context, m_meshPS.Get());
-        m_state.Rasterizer(context, m_meshRaster.Get());
         m_state.Blend(context, nullptr);
         m_state.DepthStencil(context, m_depthTestWrite.Get());
-        for (uint32_t mesh = 1; mesh < kMeshCount; ++mesh) {
-            const MeshRange& range = m_meshRanges[mesh];
+        for (uint32_t mesh = 1; mesh < buckets; ++mesh) {
+            const MeshLibrary::Mesh& info = m_meshes->Get(static_cast<MeshId>(mesh));
+            const MeshRange& range = info.range;
             if (m_instanceCount[mesh] == 0 || range.indexCount == 0)
                 continue;
+            m_state.Rasterizer(context, (info.traits & kMeshTraitDoubleSided) ? m_solidRaster.Get() : m_meshRaster.Get());
             context->DrawIndexedInstanced(range.indexCount, m_instanceCount[mesh], range.firstIndex, range.baseVertex,
                                           m_firstInstance[mesh]);
             ++drawCalls;
@@ -308,17 +422,18 @@ uint32_t ViewportRenderer::Render(ID3D11DeviceContext* context, const Rect& rect
         ++drawCalls;
     }
 
-    // 4. Selection outlines: the wire box, instanced, always on top. 32 bytes per outline instead of
+    // 4. Selection outlines: the wire box, instanced, always on top. 48 bytes per outline instead of
     //    24 line vertices.
     if (m_outlineCount > 0) {
+        const MeshRange& wireBox = m_meshes->WireBox();
         BindMeshInput(context);
         m_state.Topology(context, D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
         m_state.PixelShader(context, m_wirePS.Get());
         m_state.Rasterizer(context, m_lineRaster.Get());
         m_state.Blend(context, m_alphaBlend.Get());
         m_state.DepthStencil(context, m_depthDisabled.Get());
-        context->DrawIndexedInstanced(m_wireBoxRange.indexCount, m_outlineCount, m_wireBoxRange.firstIndex,
-                                      m_wireBoxRange.baseVertex, m_firstOutline);
+        context->DrawIndexedInstanced(wireBox.indexCount, m_outlineCount, wireBox.firstIndex, wireBox.baseVertex,
+                                      m_firstOutline);
         ++drawCalls;
     }
     return drawCalls;

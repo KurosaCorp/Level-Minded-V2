@@ -24,10 +24,12 @@ set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
 # Replace CMake's default optimization flags with our own.
 set(CMAKE_CXX_FLAGS_RELEASE        "/O2 /Ob3 /DNDEBUG")
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "/O2 /Ob3 /Zi /DNDEBUG")
+set(CMAKE_C_FLAGS_RELEASE          "/O2 /Ob3 /DNDEBUG")   # C: the model loaders
+set(CMAKE_C_FLAGS_RELWITHDEBINFO   "/O2 /Ob3 /Zi /DNDEBUG")
 
 add_compile_options(
-    /permissive-        # standards conformance
-    /Zc:__cplusplus
+    "$<$<COMPILE_LANGUAGE:CXX>:/permissive->"       # standards conformance
+    "$<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>"
     /Zc:preprocessor
     /Zc:inline          # drop unreferenced inline functions early
     /utf-8

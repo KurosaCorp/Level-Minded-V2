@@ -17,8 +17,10 @@ Alt + left drag        Orbit
 Middle drag            Pan
 Alt + right drag       Zoom (also: mouse wheel)
 Right drag + W/A/S/D   Fly (Q/E down/up, Shift faster, wheel sets fly speed)
-F / Home               Focus origin / reset view
+F / Home               Frame selection / reset view
 Numpad 1 / 3 / 7       Front / right / top view (Ctrl: opposite side)
+Left click             Select (Ctrl: toggle, Shift: add)
+W / E / R              Move / rotate / scale the selection with the gizmo (Ctrl snaps, Esc cancels)
 F1                     Show / hide the stats overlay
 
 Panels
@@ -28,12 +30,21 @@ Hierarchy (left)  Click a group to select everything inside it; the eye icon hid
 Assets (right)    Click an item to place it at the origin, inside the active Hierarchy group
                   (shown at the top of the panel).
 
+Importing models
+----------------
+Drag .gltf, .glb or .obj files onto the window, or use File > Import Asset (Ctrl+I).
+Each model becomes a tile in the Assets panel; click it to place the model. Models keep their
+authored size (1 unit = 1 meter) and are turned from Y-up to Z-up. Textures are not imported.
+
 Command line (testing)
 ----------------------
 --stress N         Add N items to the sample level
 --bench N          Run the built-in benchmark (N frames per phase), write bench.txt, exit
 --bench-out PATH   Benchmark report location
+--import PATH      Import a model into the Assets panel at startup (repeatable)
 
 Third-party software
 --------------------
 Dear ImGui (MIT license), see THIRD_PARTY_LICENSE_DearImGui.txt.
+cgltf (MIT license), see THIRD_PARTY_LICENSE_cgltf.txt.
+fast_obj (MIT license), see THIRD_PARTY_LICENSE_fast_obj.txt.

@@ -11,6 +11,7 @@ namespace {
 //   --stress N        add N items to the mock level (profiling)
 //   --bench N         run the benchmark script, N frames per phase, write a report and exit
 //   --bench-out PATH  benchmark report path (default: bench.txt in the working directory)
+//   --import PATH     import a .gltf/.glb/.obj model into the Assets palette (repeatable)
 lm::AppOptions ParseCommandLine()
 {
     lm::AppOptions options;
@@ -27,6 +28,8 @@ lm::AppOptions ParseCommandLine()
             options.benchFrames = static_cast<uint32_t>(std::wcstoul(value, nullptr, 10)), ++i;
         else if (std::wcscmp(key, L"--bench-out") == 0)
             options.benchOutput = value, ++i;
+        else if (std::wcscmp(key, L"--import") == 0)
+            options.importFiles.emplace_back(value), ++i;
     }
     ::LocalFree(argv);
     return options;

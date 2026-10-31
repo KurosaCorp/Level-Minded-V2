@@ -2,6 +2,7 @@
 
 #include "core/AllocationCounter.h"
 #include "core/Clock.h"
+#include "import/ModelImporter.h"
 #include "scene/MockLevel.h"
 
 #include <imgui.h>
@@ -9,10 +10,14 @@
 #include <imgui_impl_win32.h>
 #include <imgui_internal.h> // DockBuilderGetCentralNode
 
+#include <cderr.h>
+#include <commdlg.h>
 #include <psapi.h>
 
 #include <algorithm>
 #include <cstdio>
+#include <cwchar>
+#include <filesystem>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -60,7 +65,8 @@ bool App::Init(const AppOptions& options)
     m_options = options;
     if (!m_window.Create({L"LevelMinded", 1600, 900}, this))
         return false;
-    if (!m_gpu.Create(m_window.Handle()) || !m_viewportRenderer.Create(m_gpu.Device()))
+    m_viewport.SetMeshLibrary(&m_meshes);
+    if (!m_gpu.Create(m_window.Handle()) || !m_viewportRenderer.Create(m_gpu.Device(), &m_meshes))
         return false;
 
     IMGUI_CHECKVERSION();
@@ -76,6 +82,7 @@ bool App::Init(const AppOptions& options)
     m_imguiReady = true;
 
     BuildMockLevel(m_scene);
+    m_pendingImports = m_options.importFiles; // imported by the first frame
     if (m_options.stressItems > 0)
         BuildStressLevel(m_scene, m_options.stressItems);
     if (m_options.benchFrames > 0) {
@@ -85,8 +92,16 @@ bool App::Init(const AppOptions& options)
                 m_scene.NodeAt(i).subtreeSize > m_scene.NodeAt(m_scene.IndexOf(m_benchToggleGroup)).subtreeSize)
                 m_benchToggleGroup = m_scene.NodeAt(i).id;
         }
+        // Phase 3 moves one item every frame, like dragging it with the gizmo.
+        for (uint32_t i = m_scene.Size(); i-- > 0;) {
+            if (!m_scene.NodeAt(i).IsGroup()) {
+                m_benchMoveItem = m_scene.NodeAt(i).id;
+                break;
+            }
+        }
         m_benchPhases[0].name = "orbit, static scene";
         m_benchPhases[1].name = "orbit + mass-select toggle every frame";
+        m_benchPhases[2].name = "orbit + move one item every frame (gizmo drag)";
     }
 
     m_window.Show();
@@ -163,6 +178,12 @@ void App::RenderFrame()
     if (m_options.benchFrames > 0)
         BenchBeforeFrame();
 
+    // Menu bar first: the dockspace below fills what is left of the window.
+    DrawMainMenu();
+    // Models dropped on the window (or chosen in the import dialog) join the palette this frame.
+    if (!m_pendingImports.empty())
+        ImportPendingFiles();
+
     // Dockspace over the whole window. Its central node stays transparent and passes input through;
     // the 3D viewport is drawn there, directly into the back buffer (no extra render target or copy).
     const float dpiScale = m_window.DpiScale();
@@ -179,7 +200,7 @@ void App::RenderFrame()
     // Assets first: an item spawned here shows up in the Hierarchy and the viewport this same frame.
     {
         ProfileScope zone(Zone::AssetPanel);
-        const NodeId spawned = m_assets.Draw(m_scene, m_hierarchy.ActiveGroup(m_scene), dpiScale);
+        const NodeId spawned = m_assets.Draw(m_scene, m_catalog, m_hierarchy.ActiveGroup(m_scene), dpiScale);
         if (spawned != kInvalidNode) {
             m_scene.ClearSelection();
             m_scene.SetSelected(spawned, true);
@@ -193,8 +214,12 @@ void App::RenderFrame()
     }
     {
         ProfileScope zone(Zone::ViewportInput);
-        m_viewport.Update(viewportRect, dpiScale);
-        m_viewport.DrawOrientationGizmo(ImGui::GetBackgroundDrawList(), dpiScale);
+        const ViewportEvents events = m_viewport.Update(viewportRect, dpiScale, m_scene, m_hierarchy.ActiveNode());
+        if (events.picked != kInvalidNode) { // clicked in the 3D view: make it the hierarchy's active node
+            m_hierarchy.SetActiveNode(events.picked);
+            m_hierarchy.Reveal(m_scene, events.picked);
+        }
+        m_viewport.DrawOverlays(ImGui::GetBackgroundDrawList(), dpiScale);
     }
     {
         ProfileScope zone(Zone::SceneSubmit);
@@ -238,6 +263,152 @@ void App::RenderFrame()
     // Camera drags (e.g. fly mode with a key held) need frames even when no message arrives.
     if (m_viewport.IsInteracting())
         MarkActive();
+
+    // The open-file dialog is modal (it runs its own message loop), so it opens between frames.
+    if (m_openImportDialog) {
+        m_openImportDialog = false;
+        ShowImportDialog();
+    }
+}
+
+void App::DrawMainMenu()
+{
+    if (ImGui::BeginMainMenuBar()) {
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Import Asset...", "Ctrl+I"))
+                m_openImportDialog = true;
+            ImGui::SetItemTooltip("Add .gltf, .glb or .obj models to the Assets palette.\n"
+                                  "You can also drag model files onto the window.");
+            ImGui::Separator();
+            if (ImGui::MenuItem("Exit", "Alt+F4"))
+                m_quitRequested = true;
+            ImGui::EndMenu();
+        }
+        ImGui::EndMainMenuBar();
+    }
+    if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_I))
+        m_openImportDialog = true;
+}
+
+void App::ShowImportDialog()
+{
+    // Multi-select result: "C:\dir\file.obj\0\0", or "C:\dir\0a.obj\0b.gltf\0\0".
+    std::vector<wchar_t> buffer(32 * 1024, L'\0');
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = m_window.Handle();
+    dialog.lpstrFilter = L"3D models (*.gltf, *.glb, *.obj)\0*.gltf;*.glb;*.obj\0glTF 2.0 (*.gltf, *.glb)\0*.gltf;*.glb\0"
+                         L"Wavefront OBJ (*.obj)\0*.obj\0All files (*.*)\0*.*\0";
+    dialog.lpstrFile = buffer.data();
+    dialog.nMaxFile = static_cast<DWORD>(buffer.size());
+    dialog.lpstrTitle = L"Import Asset";
+    dialog.Flags = OFN_EXPLORER | OFN_ALLOWMULTISELECT | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
+    const BOOL chosen = ::GetOpenFileNameW(&dialog);
+    MarkActive(); // draw a fresh frame once the dialog closes
+    if (!chosen) {
+        if (::CommDlgExtendedError() == FNERR_BUFFERTOOSMALL)
+            m_assets.SetStatus("Too many files selected at once.", true);
+        return;
+    }
+
+    const wchar_t* first = buffer.data();
+    const wchar_t* next = first + std::wcslen(first) + 1;
+    if (*next == L'\0') { // one file: full path
+        m_pendingImports.emplace_back(first);
+        return;
+    }
+    const std::filesystem::path folder(first);
+    for (; *next != L'\0'; next += std::wcslen(next) + 1)
+        m_pendingImports.push_back((folder / next).wstring());
+}
+
+void App::ImportPendingFiles()
+{
+    std::vector<std::wstring> files;
+    files.swap(m_pendingImports);
+    std::string message;
+    std::string firstError;
+    size_t imported = 0;
+    const double start = Clock::Now();
+    for (const std::wstring& file : files) {
+        if (ImportFile(file, message))
+            ++imported;
+        else if (firstError.empty())
+            firstError = message;
+    }
+    if (files.size() == 1) {
+        m_assets.SetStatus(message, imported == 0);
+    } else {
+        char summary[96];
+        std::snprintf(summary, sizeof(summary), "Imported %zu of %zu files in %.0f ms.", imported, files.size(),
+                      (Clock::Now() - start) * 1000.0);
+        m_assets.SetStatus(firstError.empty() ? std::string(summary) : std::string(summary) + " " + firstError, imported < files.size());
+    }
+}
+
+namespace {
+
+std::string Utf8(const std::filesystem::path& path)
+{
+    const std::u8string text = path.u8string();
+    return std::string(text.begin(), text.end());
+}
+
+// "12,345"
+std::string Thousands(size_t value)
+{
+    std::string digits = std::to_string(value);
+    for (int i = static_cast<int>(digits.size()) - 3; i > 0; i -= 3)
+        digits.insert(static_cast<size_t>(i), 1, ',');
+    return digits;
+}
+
+} // namespace
+
+bool App::ImportFile(const std::wstring& path, std::string& message)
+{
+    const std::filesystem::path file(path);
+    const std::string fileName = Utf8(file.filename());
+    std::error_code error;
+    if (std::filesystem::is_directory(file, error)) {
+        message = fileName + ": folders can't be imported; drop the model files themselves.";
+        return false;
+    }
+    if (!IsImportableModel(file)) {
+        message = fileName + ": unsupported file type (use .gltf, .glb or .obj).";
+        return false;
+    }
+    if (const size_t existing = m_catalog.FindSource(file); existing != AssetCatalog::npos) {
+        message = fileName + " is already in the palette.";
+        m_assets.Highlight(existing);
+        return true;
+    }
+
+    const double start = Clock::Now();
+    ImportResult result = ImportModel(file);
+    if (!result.ok) {
+        message = "Could not import " + fileName + ": " + result.error;
+        return false;
+    }
+    const ImportedModel& model = result.model;
+    const MeshId mesh = m_meshes.Add(model.vertices, model.indices, model.traits);
+    if (mesh == MeshId::None) {
+        message = "Could not import " + fileName + ": the palette is full.";
+        return false;
+    }
+    const double ms = (Clock::Now() - start) * 1000.0;
+
+    const std::string triangles = Thousands(model.indices.size() / 3);
+    const std::string description = std::string(model.format) + " model, " + triangles + " triangles (" + fileName + ")";
+    const size_t index = m_catalog.AddImported(model.name, description, model.format, mesh, model.halfExtents, file);
+    m_assets.Highlight(index);
+
+    char timing[64];
+    std::snprintf(timing, sizeof(timing), " in %.1f ms.", ms);
+    message = "Imported " + std::string(m_catalog.Items()[index].name) + ": " + triangles + " triangles" + timing;
+    if (model.skippedPrimitives > 0)
+        message += " " + std::to_string(model.skippedPrimitives) + " part(s) were skipped (not triangles, or compressed).";
+    return true;
 }
 
 namespace {
@@ -247,12 +418,19 @@ constexpr uint32_t kBenchWarmupFrames = 30;
 void App::BenchBeforeFrame()
 {
     // Scripted interaction: the camera orbits every frame; in phase 2 the largest group's selection
-    // also flips every frame (100k+ items with --stress 100000).
+    // also flips every frame (100k+ items with --stress 100000); in phase 3 one item moves every frame.
     m_viewport.MutableCamera().Orbit(0.01f, 0.0f);
-    const uint32_t phaseFrame = m_benchFrame >= kBenchWarmupFrames ? m_benchFrame - kBenchWarmupFrames : 0;
-    if (m_benchFrame >= kBenchWarmupFrames && phaseFrame >= m_options.benchFrames && m_benchToggleGroup != kInvalidNode) {
+    if (m_benchFrame < kBenchWarmupFrames)
+        return;
+    const uint32_t phaseFrame = m_benchFrame - kBenchWarmupFrames;
+    const uint32_t phase = phaseFrame / m_options.benchFrames;
+    if (phase == 1 && m_benchToggleGroup != kInvalidNode) {
         const uint32_t index = m_scene.IndexOf(m_benchToggleGroup);
         m_scene.SetSelected(m_benchToggleGroup, !m_scene.NodeAt(index).Has(SceneTree::kSelected));
+    } else if (phase == 2 && m_benchMoveItem != kInvalidNode) {
+        Transform t = m_scene.TransformAt(m_scene.IndexOf(m_benchMoveItem));
+        t.position.z += (phaseFrame & 1) ? 0.01f : -0.01f;
+        m_scene.SetTransform(m_benchMoveItem, t);
     }
 }
 
@@ -380,6 +558,12 @@ void App::OnWindowDpiChanged(float dpiScale)
 {
     if (m_imguiReady)
         ApplyStyle(dpiScale);
+}
+
+void App::OnFilesDropped(std::span<const std::wstring> paths)
+{
+    m_pendingImports.insert(m_pendingImports.end(), paths.begin(), paths.end());
+    MarkActive();
 }
 
 void App::OnWindowLiveResize()

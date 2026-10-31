@@ -14,7 +14,7 @@ enum class Zone : uint8_t {
     ImGuiNewFrame,  // backends + ImGui::NewFrame
     AssetPanel,
     HierarchyPanel,
-    ViewportInput,  // camera input + orientation gizmo
+    ViewportInput,  // camera input, transform gizmo, click picking
     SceneSubmit,    // scene -> renderer instances/lines
     Overlay,
     ImGuiBuild,     // ImGui::Render (builds draw lists)

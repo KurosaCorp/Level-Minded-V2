@@ -1,10 +1,12 @@
 #pragma once
 
 #include "core/MeshId.h"
+#include "scene/Transform.h"
 
 #include <DirectXMath.h>
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -23,8 +25,10 @@ struct Bounds {
 };
 
 // Per-item data that is not needed for tree traversal (cold path, parallel to the node array).
+// The item's shape is its mesh scaled to `halfExtents`, then placed by `transform`.
 struct ItemData {
-    Bounds bounds;               // also the item's placement: mesh scaled to halfExtents at center
+    Transform transform;
+    DirectX::XMFLOAT3 halfExtents{}; // local size (meters at scale 1)
     MeshId mesh = MeshId::None;
 };
 
@@ -81,6 +85,7 @@ public:
     // New nodes are appended as the last child of `parent` (kInvalidNode = top level).
     // Only groups can have children. Returns kInvalidNode on failure.
     NodeId CreateGroup(std::string_view name, NodeId parent = kInvalidNode);
+    // `bounds` gives the initial placement: centered at bounds.center, unrotated, scale 1.
     NodeId CreateItem(std::string_view name, NodeKind kind, const Bounds& bounds, NodeId parent = kInvalidNode,
                       MeshId mesh = MeshId::Default);
 
@@ -103,6 +108,10 @@ public:
     void SetSelected(NodeId node, bool selected);
     void ClearSelection();
     void SetExpanded(NodeId node, bool expanded);
+    // Items only (groups have no transform). If the value changed, bumps TransformVersion() and logs
+    // the item in TransformChanges().
+    void SetTransform(NodeId node, const Transform& transform);
+    void SetTransformAt(uint32_t index, const Transform& transform);
     uint32_t SelectedItemCount() const { return m_selectedItemCount; } // items only, not groups
 
     // ---- Lookup and iteration. Indices are valid until the next structural edit.
@@ -118,8 +127,11 @@ public:
         const NameRef& ref = m_names[index];
         return {m_nameChars.data() + ref.offset, ref.length};
     }
-    const Bounds& BoundsAt(uint32_t index) const { return m_items[index].bounds; }
+    const ItemData& ItemAt(uint32_t index) const { return m_items[index]; }
+    const Transform& TransformAt(uint32_t index) const { return m_items[index].transform; }
     MeshId MeshAt(uint32_t index) const { return m_items[index].mesh; }
+    // World-space axis-aligned box around the item's (rotated, scaled) box.
+    Bounds WorldBoundsAt(uint32_t index) const;
     // One past the last node of the subtree rooted at `index`.
     uint32_t SubtreeEnd(uint32_t index) const { return index + m_nodes[index].subtreeSize; }
     // Index of the next sibling, or kNoIndex if `index` is the last child.
@@ -130,8 +142,17 @@ public:
 
     // Bumped by structural edits and expand/collapse: anything that changes the hierarchy's rows.
     uint64_t LayoutVersion() const { return m_layoutVersion; }
-    // Bumped by structural edits, visibility and selection: anything that changes what the viewport draws.
+    // Bumped by structural edits, visibility and selection: changes that need the viewport's draw
+    // list rebuilt. Transform edits are tracked separately (below) so moved items can be patched.
     uint64_t RenderVersion() const { return m_renderVersion; }
+    // Bumped by every transform change.
+    uint64_t TransformVersion() const { return m_transformVersion; }
+    // Items whose transform changed since RenderVersion() last changed, oldest first (ids may repeat).
+    // Any RenderVersion() bump clears it (consumers rebuild then anyway). If it would grow past the
+    // scene size, a RenderVersion() bump replaces it, so it stays bounded during long drags.
+    std::span<const NodeId> TransformChanges() const { return m_transformChanges; }
+    // One past the largest NodeId handed out so far (for arrays indexed by NodeId).
+    uint32_t IdCapacity() const { return static_cast<uint32_t>(m_indexOf.size()); }
 
     // Checks every structural invariant (ordering, sizes, links, cached flags, counters, names).
     bool Validate() const;
@@ -162,7 +183,8 @@ private:
     void CompactNamesIfNeeded();
     void RebuildLinks();
     void UpdateEffectiveVisibility(uint32_t first, uint32_t end);
-    void StructureChanged() { ++m_layoutVersion; ++m_renderVersion; }
+    void StructureChanged() { ++m_layoutVersion; RenderChanged(); }
+    void RenderChanged() { ++m_renderVersion; m_transformChanges.clear(); }
 
     std::vector<Node> m_nodes;          // hot: traversal, flags
     std::vector<NameRef> m_names;       // parallel to m_nodes
@@ -170,10 +192,12 @@ private:
     std::vector<char> m_nameChars;      // all names back to back, not null-terminated
     std::vector<uint32_t> m_indexOf;    // NodeId -> index, kNoIndex once removed
     std::vector<uint32_t> m_stack;      // scratch for RebuildLinks
+    std::vector<NodeId> m_transformChanges;
     uint32_t m_selectedItemCount = 0;
     uint32_t m_nameGarbage = 0;
     uint64_t m_layoutVersion = 0;
     uint64_t m_renderVersion = 0;
+    uint64_t m_transformVersion = 0;
 };
 
 } // namespace lm

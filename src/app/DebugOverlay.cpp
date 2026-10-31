@@ -58,6 +58,12 @@ void DebugOverlay::Draw(const FrameStats& stats, const OverlayInfo& info, Viewpo
                         DirectX::XMConvertToDegrees(camera.Pitch()));
             ImGui::Text("Fly speed   %.1f u/s", viewport.FlySpeed());
             ImGui::Text("Input       %s", viewport.InteractionName());
+            static constexpr const char* kGizmoModes[] = {"Move", "Rotate", "Scale"};
+            const TransformGizmo& gizmo = viewport.Gizmo();
+            ImGui::Text("Gizmo       %s (%s), %u targets%s", kGizmoModes[static_cast<int>(gizmo.Mode())],
+                        gizmo.Space() == GizmoSpace::Local ? "local" : "world", gizmo.TargetCount(),
+                        gizmo.IsDragging() ? ", dragging" : "");
+            ImGui::Text("Last pick   %.3f ms, %u items tested", viewport.LastPickMs(), viewport.LastPickItemsTested());
             {
                 const ImGuiIO& io = ImGui::GetIO();
                 const char* over = io.WantCaptureMouse                        ? "UI"
@@ -77,7 +83,9 @@ void DebugOverlay::Draw(const FrameStats& stats, const OverlayInfo& info, Viewpo
             if (ImGui::TreeNodeEx("Controls", ImGuiTreeNodeFlags_NoTreePushOnOpen)) {
                 ImGui::TextDisabled("Alt+LMB orbit   MMB pan   Alt+RMB / wheel zoom");
                 ImGui::TextDisabled("RMB + WASD/QE fly (Shift fast, wheel speed)");
-                ImGui::TextDisabled("F focus origin   Home reset");
+                ImGui::TextDisabled("LMB select (Ctrl toggle, Shift add)   W/E/R move/rotate/scale   X world/local");
+                ImGui::TextDisabled("Ctrl while dragging the gizmo snaps   Esc cancels the drag");
+                ImGui::TextDisabled("F focus selection   Home reset");
                 ImGui::TextDisabled("Numpad 1/3/7 front/right/top (Ctrl: opposite)");
                 ImGui::TextDisabled("F1 toggle this overlay");
             }

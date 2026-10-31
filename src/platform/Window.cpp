@@ -1,8 +1,10 @@
 #include "platform/Window.h"
 
 #include <dwmapi.h>
+#include <shellapi.h>
 
 #include <algorithm>
+#include <vector>
 
 namespace lm {
 
@@ -41,6 +43,13 @@ bool Window::Create(const WindowDesc& desc, WindowEventHandler* handler)
                                nullptr, nullptr, m_instance, this);
     if (!m_hwnd)
         return false;
+
+    // Accept files dropped from Explorer (WM_DROPFILES). If the editor runs elevated, Windows blocks
+    // these messages from the (non-elevated) Explorer unless they are explicitly allowed.
+    ::DragAcceptFiles(m_hwnd, TRUE);
+    constexpr UINT kCopyGlobalData = 0x0049; // WM_COPYGLOBALDATA, used by the drop protocol
+    for (const UINT allowed : {UINT(WM_DROPFILES), UINT(WM_COPYDATA), kCopyGlobalData})
+        ::ChangeWindowMessageFilterEx(m_hwnd, allowed, MSGFLT_ALLOW, nullptr);
 
     // Dark title bar to match the editor theme (ignored on older Windows builds).
     const BOOL useDarkMode = TRUE;
@@ -170,6 +179,22 @@ LRESULT Window::WndProc(UINT msg, WPARAM wParam, LPARAM lParam)
         if ((wParam & 0xFFF0) == SC_KEYMENU) // no Alt menu activation / beep
             return 0;
         break;
+
+    case WM_DROPFILES: {
+        const auto drop = reinterpret_cast<HDROP>(wParam);
+        const UINT count = ::DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+        std::vector<std::wstring> paths;
+        paths.reserve(count);
+        for (UINT i = 0; i < count; ++i) {
+            std::wstring path(::DragQueryFileW(drop, i, nullptr, 0), L'\0');
+            ::DragQueryFileW(drop, i, path.data(), static_cast<UINT>(path.size() + 1));
+            paths.push_back(std::move(path));
+        }
+        ::DragFinish(drop);
+        if (m_handler && !paths.empty())
+            m_handler->OnFilesDropped(paths);
+        return 0;
+    }
 
     case WM_DESTROY:
         ::PostQuitMessage(0);

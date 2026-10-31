@@ -26,6 +26,24 @@ void DrawItemIcon(ImDrawList* dl, ImVec2 c, float size, const CatalogItem& item)
     const ImU32 base = KindColor(item.kind);
     const float r = size * 0.36f;
 
+    if (item.format) { // imported model: wireframe cube glyph + format badge
+        const ImU32 color = IM_COL32(96, 196, 230, 255);
+        const float s = r * 0.9f;
+        const ImVec2 top(c.x, c.y - s), upperRight(c.x + s * 0.87f, c.y - s * 0.5f), lowerRight(c.x + s * 0.87f, c.y + s * 0.5f);
+        const ImVec2 bottom(c.x, c.y + s), lowerLeft(c.x - s * 0.87f, c.y + s * 0.5f), upperLeft(c.x - s * 0.87f, c.y - s * 0.5f);
+        const ImVec2 hexagon[6] = {top, upperRight, lowerRight, bottom, lowerLeft, upperLeft};
+        dl->AddConvexPolyFilled(hexagon, 6, (color & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 50));
+        dl->AddPolyline(hexagon, 6, color, std::max(1.5f, size * 0.03f), ImDrawFlags_Closed);
+        for (const ImVec2& corner : {upperLeft, upperRight, bottom})
+            dl->AddLine(c, corner, color, std::max(1.2f, size * 0.025f));
+        const ImVec2 badgeSize = ImGui::CalcTextSize(item.format);
+        const ImVec2 badgeMin(c.x + s * 0.2f, c.y + s * 0.55f);
+        dl->AddRectFilled(ImVec2(badgeMin.x - 2.0f, badgeMin.y - 1.0f), ImVec2(badgeMin.x + badgeSize.x + 2.0f, badgeMin.y + badgeSize.y + 1.0f),
+                          IM_COL32(30, 32, 38, 230), 3.0f);
+        dl->AddText(badgeMin, color, item.format);
+        return;
+    }
+
     if (item.kind == NodeKind::Light) { // sun: disc + rays
         dl->AddCircleFilled(c, r * 0.55f, base);
         for (int i = 0; i < 8; ++i) {
@@ -88,8 +106,9 @@ void DrawItemIcon(ImDrawList* dl, ImVec2 c, float size, const CatalogItem& item)
         dl->AddRectFilled(mn, mx, (base & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 40));
         break;
     }
-    case MeshId::Count:
+    case MeshId::BuiltinCount:
     case MeshId::Default:
+    default:
         break;
     }
 }
@@ -122,11 +141,23 @@ void FormatGroupPath(const SceneTree& tree, NodeId group, char (&out)[256])
 
 } // namespace
 
-NodeId AssetPanel::Draw(SceneTree& tree, NodeId targetGroup, float dpiScale)
+void AssetPanel::SetStatus(std::string text, bool isError)
 {
-    const std::span<const CatalogItem> catalog = ItemCatalog();
-    if (m_spawnCounts.size() != catalog.size())
-        m_spawnCounts.assign(catalog.size(), 0);
+    m_status = std::move(text);
+    m_statusIsError = isError;
+}
+
+void AssetPanel::Highlight(size_t index)
+{
+    m_highlight = index;
+    m_scrollToHighlight = true;
+}
+
+NodeId AssetPanel::Draw(SceneTree& tree, const AssetCatalog& assets, NodeId targetGroup, float dpiScale)
+{
+    const std::span<const CatalogItem> catalog = assets.Items();
+    if (m_spawnCounts.size() < catalog.size())
+        m_spawnCounts.resize(catalog.size(), 0); // keeps the counts of existing items
 
     NodeId spawned = kInvalidNode;
     if (!ImGui::Begin(kWindowName)) {
@@ -141,7 +172,19 @@ NodeId AssetPanel::Draw(SceneTree& tree, NodeId targetGroup, float dpiScale)
     ImGui::TextWrapped("%s", path);
     ImGui::SetNextItemWidth(-FLT_MIN);
     m_filter.DrawWithHint("##filter", "Search...");
+    if (!m_status.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, m_statusIsError ? ImVec4(1.0f, 0.45f, 0.4f, 1.0f) : ImVec4(0.55f, 0.85f, 0.55f, 1.0f));
+        ImGui::TextWrapped("%s", m_status.c_str());
+        ImGui::PopStyleColor();
+    } else {
+        ImGui::TextDisabled("Drop .gltf, .glb or .obj files here, or use File > Import Asset.");
+    }
     ImGui::Separator();
+
+    // The highlight of a just-imported tile lasts until the next click (no timer: the editor only
+    // draws frames while something happens).
+    if (!m_scrollToHighlight && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)))
+        m_highlight = static_cast<size_t>(-1);
 
     if (ImGui::BeginChild("##tiles")) {
         const float tileSize = 84.0f * dpiScale;
@@ -156,7 +199,12 @@ NodeId AssetPanel::Draw(SceneTree& tree, NodeId targetGroup, float dpiScale)
             if (column > 0)
                 ImGui::SameLine();
             ImGui::PushID(static_cast<int>(i));
-            if (DrawTile(item, tileSize, dpiScale)) {
+            const bool highlighted = i == m_highlight;
+            if (i == m_highlight && m_scrollToHighlight) {
+                ImGui::SetScrollHereY(0.5f);
+                m_scrollToHighlight = false;
+            }
+            if (DrawTile(item, tileSize, dpiScale, highlighted)) {
                 char name[64];
                 std::snprintf(name, sizeof(name), "%s_%02d", item.name, ++m_spawnCounts[i]);
                 for (char& ch : name)
@@ -173,7 +221,7 @@ NodeId AssetPanel::Draw(SceneTree& tree, NodeId targetGroup, float dpiScale)
     return spawned;
 }
 
-bool AssetPanel::DrawTile(const CatalogItem& item, float tileSize, float dpiScale)
+bool AssetPanel::DrawTile(const CatalogItem& item, float tileSize, float dpiScale, bool highlighted)
 {
     const ImVec2 min = ImGui::GetCursorScreenPos();
     const bool clicked = ImGui::InvisibleButton("##tile", ImVec2(tileSize, tileSize));
@@ -186,6 +234,8 @@ bool AssetPanel::DrawTile(const CatalogItem& item, float tileSize, float dpiScal
     dl->AddRectFilled(min, max, ImGui::GetColorU32(background), 6.0f * dpiScale);
     if (hovered)
         dl->AddRect(min, max, ImGui::GetColorU32(ImGuiCol_ButtonHovered), 6.0f * dpiScale);
+    if (highlighted) // just imported
+        dl->AddRect(min, max, IM_COL32(110, 220, 120, 255), 6.0f * dpiScale, 2.0f * dpiScale);
 
     const float labelHeight = ImGui::GetTextLineHeight() + 6.0f * dpiScale;
     const float iconArea = tileSize - labelHeight;
