@@ -5,11 +5,13 @@
     .\build.ps1                  # Release build
     .\build.ps1 -Preset debug    # Debug build
     .\build.ps1 -Run             # Release build, then launch
+    .\build.ps1 -Test            # Release build, then run unit tests
 #>
 param(
     [ValidateSet('release', 'debug', 'profile')]
     [string]$Preset = 'release',
     [switch]$Run,
+    [switch]$Test,
     [switch]$Clean
 )
 $ErrorActionPreference = 'Stop'
@@ -42,4 +44,8 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
 $exe = Join-Path $buildDir 'bin\LevelMinded.exe'
 Write-Host "Built $exe"
+if ($Test) {
+    ctest --test-dir $buildDir --output-on-failure
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+}
 if ($Run) { Start-Process $exe -WorkingDirectory (Split-Path $exe) }

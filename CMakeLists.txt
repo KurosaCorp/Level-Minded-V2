@@ -23,6 +23,21 @@ include(BuildSettings)
 include(Dependencies)
 include(Shaders)
 
+# Data model and CPU-side geometry (no UI or GPU dependencies), shared by the editor and the tests.
+add_library(levelminded_core STATIC
+    src/core/MeshId.h
+    src/render/MeshGeometry.cpp
+    src/render/MeshGeometry.h
+    src/scene/ItemCatalog.cpp
+    src/scene/ItemCatalog.h
+    src/scene/MockLevel.cpp
+    src/scene/MockLevel.h
+    src/scene/SceneTree.cpp
+    src/scene/SceneTree.h
+)
+target_include_directories(levelminded_core PUBLIC src)
+lm_apply_project_warnings(levelminded_core)
+
 add_executable(LevelMinded WIN32
     src/main.cpp
     src/app/App.cpp
@@ -31,8 +46,13 @@ add_executable(LevelMinded WIN32
     src/app/DebugOverlay.h
     src/core/Clock.h
     src/core/Rect.h
+    src/editor/AssetPanel.cpp
+    src/editor/AssetPanel.h
     src/editor/EditorCamera.cpp
     src/editor/EditorCamera.h
+    src/editor/HierarchyPanel.cpp
+    src/editor/HierarchyPanel.h
+    src/editor/NodeStyle.h
     src/editor/Viewport.cpp
     src/editor/Viewport.h
     src/platform/Window.cpp
@@ -46,20 +66,24 @@ add_executable(LevelMinded WIN32
     src/render/shaders/Common.hlsli
     src/render/shaders/Grid.hlsl
     src/render/shaders/Lines.hlsl
+    src/render/shaders/Mesh.hlsl
     res/LevelMinded.manifest
 )
 # Keep the .hlsl files visible in IDEs without MSBuild trying to compile them.
 set_source_files_properties(
     src/render/shaders/Common.hlsli src/render/shaders/Grid.hlsl src/render/shaders/Lines.hlsl
+    src/render/shaders/Mesh.hlsl
     PROPERTIES HEADER_FILE_ONLY TRUE)
 
 lm_add_shader(LevelMinded src/render/shaders/Grid.hlsl  VSMain vs_5_0 g_GridVS)
 lm_add_shader(LevelMinded src/render/shaders/Grid.hlsl  PSMain ps_5_0 g_GridPS)
 lm_add_shader(LevelMinded src/render/shaders/Lines.hlsl VSMain vs_5_0 g_LineVS)
 lm_add_shader(LevelMinded src/render/shaders/Lines.hlsl PSMain ps_5_0 g_LinePS)
+lm_add_shader(LevelMinded src/render/shaders/Mesh.hlsl  VSMain vs_5_0 g_MeshVS)
+lm_add_shader(LevelMinded src/render/shaders/Mesh.hlsl  PSMain ps_5_0 g_MeshPS)
 
 target_include_directories(LevelMinded PRIVATE src)
-target_link_libraries(LevelMinded PRIVATE imgui d3d11 dxgi dwmapi)
+target_link_libraries(LevelMinded PRIVATE levelminded_core imgui d3d11 dxgi dwmapi)
 target_compile_definitions(LevelMinded PRIVATE
     LM_VERSION_STRING="${PROJECT_VERSION}"
     LM_BUILD_CONFIG="$<CONFIG>")
@@ -68,3 +92,11 @@ lm_apply_project_warnings(LevelMinded)
 set_target_properties(LevelMinded PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+# ---- Tests (console app, run with `ctest` or `.\build.ps1 -Test`)
+enable_testing()
+add_executable(LevelMindedTests tests/SceneTreeTests.cpp)
+target_link_libraries(LevelMindedTests PRIVATE levelminded_core)
+lm_apply_project_warnings(LevelMindedTests)
+set_target_properties(LevelMindedTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+add_test(NAME SceneTree COMMAND LevelMindedTests)

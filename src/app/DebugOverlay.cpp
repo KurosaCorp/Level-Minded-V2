@@ -1,6 +1,7 @@
 #include "app/DebugOverlay.h"
 
 #include "editor/Viewport.h"
+#include "scene/SceneTree.h"
 
 #include <imgui.h>
 
@@ -31,6 +32,8 @@ void DebugOverlay::Draw(const FrameStats& stats, const OverlayInfo& info, Viewpo
             ImGui::Separator();
             ImGui::Text("CPU frame   %.3f ms", stats.cpuFrameMs);
             ImGui::Text("Draw calls  %u (3D)", stats.viewportDrawCalls);
+            if (info.scene)
+                ImGui::Text("Scene       %u nodes, %u selected", info.scene->Size(), info.scene->SelectedItemCount());
             ImGui::Text("Frames      %llu", static_cast<unsigned long long>(stats.framesRendered));
             ImGui::Text("Wakeups     %llu", static_cast<unsigned long long>(stats.wakeups));
             ImGui::Text("Last sleep  %.2f s", stats.lastSleepSeconds);

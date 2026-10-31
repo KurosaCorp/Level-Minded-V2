@@ -1,10 +1,15 @@
 #pragma once
 
 #include "app/DebugOverlay.h"
+#include "editor/AssetPanel.h"
+#include "editor/HierarchyPanel.h"
 #include "editor/Viewport.h"
 #include "platform/Window.h"
 #include "render/GpuDevice.h"
 #include "render/ViewportRenderer.h"
+#include "scene/SceneTree.h"
+
+typedef unsigned int ImGuiID;
 
 namespace lm {
 
@@ -25,6 +30,7 @@ public:
 private:
     void Shutdown();
     void RenderFrame();
+    void BuildDefaultLayout(ImGuiID dockspaceId);
     void ApplyStyle(float dpiScale);
     void MarkActive();
     DWORD IdleWaitTimeoutMs() const;
@@ -37,11 +43,15 @@ private:
     Window m_window;
     GpuDevice m_gpu;
     ViewportRenderer m_viewportRenderer;
+    SceneTree m_scene;
     Viewport m_viewport;
+    HierarchyPanel m_hierarchy;
+    AssetPanel m_assets;
     DebugOverlay m_overlay;
     FrameStats m_stats;
 
     bool m_imguiReady = false;
+    bool m_layoutBuilt = false;
     bool m_deviceLost = false;
     uint32_t m_pendingWidth = 0;
     uint32_t m_pendingHeight = 0;

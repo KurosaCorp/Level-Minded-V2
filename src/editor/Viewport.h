@@ -3,6 +3,7 @@
 #include "core/Rect.h"
 #include "editor/EditorCamera.h"
 #include "render/ViewportRenderer.h"
+#include "scene/SceneTree.h"
 
 struct ImDrawList;
 
@@ -24,6 +25,9 @@ public:
     void DrawOrientationGizmo(ImDrawList* drawList, float dpiScale) const;
 
     ViewportCamera RenderCamera() const;
+    // Queues every effectively visible item: solid mesh instances (or wire boxes for volumes without a
+    // mesh), plus always-on-top outlines for selected items.
+    void SubmitScene(const SceneTree& scene, ViewportRenderer& renderer) const;
 
     // True while a camera drag is in progress; the app keeps rendering continuously then.
     bool IsInteracting() const { return m_drag != Drag::None; }

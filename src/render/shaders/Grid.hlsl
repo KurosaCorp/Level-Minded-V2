@@ -99,6 +99,8 @@ PSOut PSMain(VSOut input)
     const float4 clipPos = mul(float4(worldPos, 1.0), g_ViewProj);
     PSOut output;
     output.color = float4(color, alpha);
-    output.depth = clipPos.z / clipPos.w;
+    // Nudge slightly toward the camera (reversed-Z: larger = nearer) so the grid wins over surfaces lying
+    // exactly on z = 0, such as the top of a floor brush, instead of flickering against them.
+    output.depth = saturate(clipPos.z / clipPos.w * 1.00002);
     return output;
 }

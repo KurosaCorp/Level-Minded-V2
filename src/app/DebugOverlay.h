@@ -6,6 +6,7 @@
 namespace lm {
 
 class Viewport;
+class SceneTree;
 
 struct FrameStats {
     uint64_t framesRendered = 0;
@@ -20,6 +21,7 @@ struct OverlayInfo {
     uint32_t backBufferWidth = 0;
     uint32_t backBufferHeight = 0;
     float dpiScale = 1.0f;
+    const SceneTree* scene = nullptr;
 };
 
 // Small panel in the viewport's top-left corner with build, GPU, frame-loop and camera stats.

@@ -1,5 +1,7 @@
 #include "editor/Viewport.h"
 
+#include "editor/NodeStyle.h"
+
 #include <imgui.h>
 
 #include <algorithm>
@@ -139,6 +141,34 @@ ViewportCamera Viewport::RenderCamera() const
     // Show more of the plane the higher / farther the camera is.
     camera.gridFadeDistance = std::max({std::abs(camera.eye.z) * 60.0f, m_camera.Distance() * 8.0f, 60.0f});
     return camera;
+}
+
+void Viewport::SubmitScene(const SceneTree& scene, ViewportRenderer& renderer) const
+{
+    // One linear pass over the node array; hidden subtrees are skipped in one jump.
+    for (uint32_t i = 0; i < scene.Size();) {
+        const SceneTree::Node& node = scene.NodeAt(i);
+        if (!node.Has(SceneTree::kEffectivelyVisible)) {
+            i = scene.SubtreeEnd(i);
+            continue;
+        }
+        if (!node.IsGroup()) {
+            const Bounds& bounds = scene.BoundsAt(i);
+            const bool selected = node.Has(SceneTree::kSelected);
+            const MeshId mesh = scene.MeshAt(i);
+            if (mesh != MeshId::None) {
+                uint32_t flags = selected ? kMeshFlagSelected : 0u;
+                if (node.kind == NodeKind::Light)
+                    flags |= kMeshFlagEmissive;
+                renderer.AddMeshInstance(mesh, bounds.center, bounds.halfExtents, KindAlbedo(node.kind), flags);
+            } else if (!selected) {
+                renderer.Lines().AddBox(bounds.center, bounds.halfExtents, KindColor(node.kind)); // volume
+            }
+            if (selected)
+                renderer.OverlayLines().AddBox(bounds.center, bounds.halfExtents, kSelectionColor);
+        }
+        ++i;
+    }
 }
 
 void Viewport::DrawOrientationGizmo(ImDrawList* drawList, float dpiScale) const

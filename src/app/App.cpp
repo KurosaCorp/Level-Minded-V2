@@ -1,6 +1,7 @@
 ﻿#include "app/App.h"
 
 #include "core/Clock.h"
+#include "scene/MockLevel.h"
 
 #include <imgui.h>
 #include <imgui_impl_dx11.h>
@@ -65,6 +66,8 @@ bool App::Init()
     if (!ImGui_ImplWin32_Init(m_window.Handle()) || !ImGui_ImplDX11_Init(m_gpu.Device(), m_gpu.Context()))
         return false;
     m_imguiReady = true;
+
+    BuildMockLevel(m_scene);
 
     m_window.Show();
     MarkActive();
@@ -133,15 +136,30 @@ void App::RenderFrame()
     // Dockspace over the whole window. Its central node stays transparent and passes input through;
     // the 3D viewport is drawn there, directly into the back buffer (no extra render target or copy).
     const float dpiScale = m_window.DpiScale();
-    const ImGuiID dockspaceId = ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+    const ImGuiID dockspaceId = ImGui::GetID("LevelMindedDockSpace");
+    if (!m_layoutBuilt) {
+        BuildDefaultLayout(dockspaceId);
+        m_layoutBuilt = true;
+    }
+    ImGui::DockSpaceOverViewport(dockspaceId, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
     Rect viewportRect{0.0f, 0.0f, static_cast<float>(m_gpu.Width()), static_cast<float>(m_gpu.Height())};
     if (const ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(dockspaceId))
         viewportRect = {central->Pos.x, central->Pos.y, central->Size.x, central->Size.y};
 
+    // Assets first: an item spawned here shows up in the Hierarchy and the viewport this same frame.
+    const NodeId spawned = m_assets.Draw(m_scene, m_hierarchy.ActiveGroup(m_scene), dpiScale);
+    if (spawned != kInvalidNode) {
+        m_scene.ClearSelection();
+        m_scene.SetSelected(spawned, true);
+        m_hierarchy.SetActiveNode(spawned); // keeps the same target group for the next spawn
+        m_hierarchy.Reveal(m_scene, spawned);
+    }
+    m_hierarchy.Draw(m_scene, dpiScale);
     m_viewport.Update(viewportRect, dpiScale);
     m_viewport.DrawOrientationGizmo(ImGui::GetBackgroundDrawList(), dpiScale);
+    m_viewport.SubmitScene(m_scene, m_viewportRenderer);
 
-    const OverlayInfo info{&m_gpu.AdapterName(), m_gpu.Width(), m_gpu.Height(), dpiScale};
+    const OverlayInfo info{&m_gpu.AdapterName(), m_gpu.Width(), m_gpu.Height(), dpiScale, &m_scene};
     m_overlay.Draw(m_stats, info, m_viewport);
 
     ImGui::Render();
@@ -159,6 +177,22 @@ void App::RenderFrame()
     // Camera drags (e.g. fly mode with a key held) need frames even when no message arrives.
     if (m_viewport.IsInteracting())
         MarkActive();
+}
+
+void App::BuildDefaultLayout(ImGuiID dockspaceId)
+{
+    // Hierarchy on the left, Assets on the right; the remaining central node is the 3D viewport.
+    ImGui::DockBuilderRemoveNode(dockspaceId);
+    ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
+    ImGuiID left = 0;
+    ImGuiID right = 0;
+    ImGuiID center = 0;
+    ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, 0.2f, &left, &center);
+    ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.22f, &right, &center);
+    ImGui::DockBuilderDockWindow(HierarchyPanel::kWindowName, left);
+    ImGui::DockBuilderDockWindow(AssetPanel::kWindowName, right);
+    ImGui::DockBuilderFinish(dockspaceId);
 }
 
 void App::ApplyStyle(float dpiScale)

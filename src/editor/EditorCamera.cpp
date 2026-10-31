@@ -20,7 +20,7 @@ const XMVECTORF32 kWorldUp = {{{0.0f, 0.0f, 1.0f, 0.0f}}};
 void EditorCamera::Reset()
 {
     m_target = {0.0f, 0.0f, 0.0f};
-    m_distance = 18.0f;
+    m_distance = 34.0f;
     m_yaw = XMConvertToRadians(-60.0f);
     m_pitch = XMConvertToRadians(30.0f);
 }

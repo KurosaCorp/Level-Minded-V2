@@ -25,7 +25,10 @@ public:
         m_vertices.push_back({a, rgba});
         m_vertices.push_back({b, rgba});
     }
+    // Wireframe axis-aligned box (12 lines).
+    void AddBox(const DirectX::XMFLOAT3& center, const DirectX::XMFLOAT3& halfExtents, uint32_t rgba);
     size_t LineCount() const { return m_vertices.size() / 2; }
+    void Clear() { m_vertices.clear(); }
 
     // Uploads and draws all queued lines, then clears the batch. The caller binds shaders, input
     // layout, states and constants. Returns the number of draw calls issued (0 or 1).
