@@ -4,7 +4,7 @@
 
 ![LevelMinded overview](docs/overview.png)
 
-> **Status:** v1.0 is the first public release, focused on the core editor: viewport, hierarchy and asset palette. Click selection, move / rotate / scale tools, model importing (glTF and OBJ), saving / loading maps, undo / redo and Lua mods are now on `main`.
+> **Status:** LevelMinded is in **beta**. The current download, **v1.0** (a pre-release), contains the core editor: viewport, hierarchy and asset palette. Everything else described here (click selection and the move / rotate / scale tools, model importing, saving and loading maps, undo / redo and Lua mods) is already on `main` and will be in the next release. To use it today, [build from source](#building-from-source).
 
 ## Contents
 
@@ -49,11 +49,11 @@
 
 ### Download and run
 
-1. Open the [Releases page](https://github.com/KurosaCorp/Level-Minded-V2/releases) and download `LevelMinded_v1.0.zip`.
+1. Open the [Releases page](https://github.com/KurosaCorp/Level-Minded-V2/releases) and download the zip of the latest release (currently `LevelMinded_v1.0.zip`, a pre-release).
 2. Extract the zip to any folder (for example your Desktop or `C:\Tools\LevelMinded`).
 3. Double-click **`LevelMinded.exe`**.
 
-There is nothing to install. The folder contains only:
+There is nothing to install. The folder contains only these files (the v1.0 pre-release has just the first three; the others arrive with the features in the next release):
 
 | File | Purpose |
 |---|---|
@@ -74,9 +74,12 @@ To remove LevelMinded, delete the folder. It does not write settings, registry e
 
 LevelMinded opens with a small **sample level**: a two-storey building with props, lights and gameplay markers. It lets you try every feature right away:
 
+- the **menu bar** at the top (**File**, **Edit**, **Mods**),
 - the **Hierarchy** on the left,
-- the **3D Viewport** in the center,
-- the **Assets** palette on the right.
+- the **3D Viewport** in the center, with the **Move / Rotate / Scale** toolbar,
+- the **Assets** palette on the right, with the **Mods** panel below it.
+
+The bundled sample mod greets you in the status bar at the right end of the menu bar.
 
 ## Interface Overview
 
@@ -84,11 +87,13 @@ LevelMinded opens with a small **sample level**: a two-storey building with prop
 
 | Area | What it is for |
 |---|---|
+| **Top: menu bar** | **File** (load, save, import models, exit), **Edit** (undo, redo) and **Mods** (commands added by mods, reload mods). The right end shows status messages, such as the result of the last save. |
 | **Left: Hierarchy** | The structure of your map: groups and the items inside them. Select, hide, rename, reorder and regroup. |
-| **Center: 3D Viewport** | The map in 3D, with an infinite ground grid and a free editor camera. |
-| **Right: Assets** | A palette of items you can place into the map. |
+| **Center: 3D Viewport** | The map in 3D, with an infinite ground grid, a free editor camera, click selection and the transform gizmo. The toolbar at its top switches between **Move**, **Rotate** and **Scale** and between world and local axes. |
+| **Right: Assets** | A palette of items you can place into the map: the built-in items and your imported models. |
+| **Right, below: Mods** | The loaded mods, their status, logs and their own controls. |
 
-The panels are docked and can be resized by dragging the borders between them.
+The panels are docked and can be resized by dragging the borders between them. The title bar shows the map's file name, with a `*` while it has unsaved changes.
 
 ## Center: 3D Viewport
 
@@ -393,7 +398,7 @@ LevelMinded.exe --stress 100000 --bench 300
 
 ## Known Limitations
 
-v1.0 is the foundation release. Please be aware that:
+LevelMinded is still in beta. Please be aware that:
 
 - New items are always placed at the origin; move them into place with the gizmo.
 - There is no box (drag-rectangle) selection in the viewport yet.
@@ -402,8 +407,15 @@ v1.0 is the foundation release. Please be aware that:
 
 ## Roadmap
 
-- More of the editor available to mods (custom panels, map events, reading imported model details).
-- Textures for imported models.
+Planned next, roughly in this order:
+
+- **Next release:** everything that is already on `main` (see [Status](#levelminded)), as a downloadable package.
+- **Box selection:** drag a rectangle in the viewport to select everything inside it.
+- **Better placement:** place new items where you click in the viewport (or in front of the camera) instead of at the origin, with snapping to the grid and to other items.
+- **Duplicate, copy and paste** items and groups.
+- **Textures for imported models**, plus support for Draco-compressed glTF files.
+- **A larger mod API:** custom panels, map events (loading, saving, selection changes) and access to imported model details.
+- **Signed releases**, so Windows SmartScreen no longer warns on first launch.
 
 ## Building from Source
 
@@ -422,7 +434,7 @@ cd Level-Minded-V2
 | `.\build.ps1 -Preset debug` | Debug build |
 | `.\build.ps1 -Run` | Build and launch |
 | `.\build.ps1 -Test` | Build and run the unit tests |
-| `build_release.bat` | Clean release build, tests, checks, and the packaged `dist\LevelMinded_v1.0\` folder plus a `.zip` |
+| `build_release.bat` | Clean release build, tests, checks, and the packaged `dist\LevelMinded_v<version>\` folder plus a `.zip` |
 
 The scripts find Visual Studio automatically, so no Developer Command Prompt is needed.
 
