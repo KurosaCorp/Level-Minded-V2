@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(LevelMinded
-    VERSION 1.0.0
+    VERSION 2.0.0
     DESCRIPTION "Optimized 3D map design tool"
     LANGUAGES C CXX)
 
@@ -62,7 +62,7 @@ endif()
 configure_file(res/LevelMinded.manifest.in "${LM_GENERATED_DIR}/LevelMinded.manifest" @ONLY)
 configure_file(res/LevelMinded.rc.in "${LM_GENERATED_DIR}/LevelMinded.rc" @ONLY)
 configure_file(res/README.txt.in "${LM_GENERATED_DIR}/README.txt" @ONLY NEWLINE_STYLE CRLF)
-# "1.0" for the package folder name (read by build_release.bat).
+# "2.0" for the package folder name (read by build_release.bat).
 file(WRITE "${CMAKE_BINARY_DIR}/package_version.txt" "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}")
 
 add_executable(LevelMinded WIN32

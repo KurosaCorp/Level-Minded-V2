@@ -74,7 +74,7 @@ Everything is in the global table `lm`. Positions are in **meters**, the world i
 
 | Function | Description |
 |---|---|
-| `lm.version` | LevelMinded's version, for example `"1.0.0"`. |
+| `lm.version` | LevelMinded's version, for example `"2.0.0"`. |
 | `print(...)` / `lm.log(...)` | Writes a line to the mod's log (in the Mods panel). |
 | `lm.notify(text)` | Shows a short message in the editor's status bar ("My Mod: text"). |
 | `lm.add_menu_item(label, function)` | Adds a command to the **Mods** menu, under the mod's name. Up to 64 per mod. |

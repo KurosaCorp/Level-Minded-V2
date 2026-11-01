@@ -4,7 +4,9 @@
 
 ![LevelMinded overview](docs/overview.png)
 
-> **Status:** LevelMinded is in **beta**. The current download, **v1.0** (a pre-release), contains the core editor: viewport, hierarchy and asset palette. Everything else described here (click selection and the move / rotate / scale tools, model importing, saving and loading maps, undo / redo and Lua mods) is already on `main` and will be in the next release. To use it today, [build from source](#building-from-source).
+> **Status:** LevelMinded is in **beta**. The current release is **v2.0**.
+>
+> **New in v2.0:** click selection and a move / rotate / scale gizmo (W / E / R), importing glTF and OBJ models, saving and loading maps, undo / redo, and Lua mods. v1.0 had the core editor: viewport, hierarchy and asset palette.
 
 ## Contents
 
@@ -49,11 +51,11 @@
 
 ### Download and run
 
-1. Open the [Releases page](https://github.com/KurosaCorp/Level-Minded-V2/releases) and download the zip of the latest release (currently `LevelMinded_v1.0.zip`, a pre-release).
+1. Open the [Releases page](https://github.com/KurosaCorp/Level-Minded-V2/releases) and download the zip of the latest release (currently `LevelMinded_v2.0.zip`).
 2. Extract the zip to any folder (for example your Desktop or `C:\Tools\LevelMinded`).
 3. Double-click **`LevelMinded.exe`**.
 
-There is nothing to install. The folder contains only these files (the v1.0 pre-release has just the first three; the others arrive with the features in the next release):
+There is nothing to install. The folder contains only these files:
 
 | File | Purpose |
 |---|---|
@@ -409,7 +411,6 @@ LevelMinded is still in beta. Please be aware that:
 
 Planned next, roughly in this order:
 
-- **Next release:** everything that is already on `main` (see [Status](#levelminded)), as a downloadable package.
 - **Box selection:** drag a rectangle in the viewport to select everything inside it.
 - **Better placement:** place new items where you click in the viewport (or in front of the camera) instead of at the origin, with snapping to the grid and to other items.
 - **Duplicate, copy and paste** items and groups.
