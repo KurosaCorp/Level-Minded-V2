@@ -221,7 +221,7 @@ void MacroCommand::Undo(SceneTree& scene)
 
 size_t MacroCommand::MemoryBytes() const
 {
-    size_t bytes = m_commands.capacity() * sizeof(void*) + m_applied.capacity();
+    size_t bytes = m_commands.capacity() * sizeof(void*) + m_applied.capacity() + m_name.capacity();
     for (const auto& command : m_commands)
         bytes += sizeof(*command) + command->MemoryBytes();
     return bytes;

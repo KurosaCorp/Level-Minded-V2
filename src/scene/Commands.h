@@ -74,6 +74,26 @@ private:
     DirectX::XMFLOAT3 m_halfExtents;
 };
 
+// Creates an item with a full placement (mods, scripted edits).
+class CreateItemCommand final : public InsertCommand {
+public:
+    CreateItemCommand(std::string_view name, NodeKind kind, const Transform& transform, const DirectX::XMFLOAT3& halfExtents,
+                      NodeId parent, MeshId mesh)
+        : InsertCommand(parent), m_name(name), m_kind(kind), m_transform(transform), m_halfExtents(halfExtents), m_mesh(mesh)
+    {
+    }
+    const char* Name() const override { return "Place Item"; }
+    size_t MemoryBytes() const override { return InsertCommand::MemoryBytes() + m_name.capacity(); }
+
+private:
+    NodeId Create(SceneTree& scene) override { return scene.CreateItem(m_name, m_kind, m_transform, m_halfExtents, Parent(), m_mesh); }
+    std::string m_name;
+    NodeKind m_kind;
+    Transform m_transform;
+    DirectX::XMFLOAT3 m_halfExtents;
+    MeshId m_mesh;
+};
+
 class CreateGroupCommand final : public InsertCommand {
 public:
     CreateGroupCommand(std::string_view name, NodeId parent) : InsertCommand(parent), m_name(name) {}
@@ -174,14 +194,16 @@ private:
 // Several commands as one undo step (executed in order, undone in reverse).
 class MacroCommand final : public Command {
 public:
-    MacroCommand(const char* name, std::vector<std::unique_ptr<Command>> commands) : m_name(name), m_commands(std::move(commands)) {}
+    MacroCommand(std::string_view name, std::vector<std::unique_ptr<Command>> commands) : m_name(name), m_commands(std::move(commands)) {}
     bool Execute(SceneTree& scene) override;
     void Undo(SceneTree& scene) override;
-    const char* Name() const override { return m_name; }
+    const char* Name() const override { return m_name.c_str(); }
     size_t MemoryBytes() const override;
+    // For sub-commands that were already executed one by one (then CommandHistory::Push the macro).
+    void MarkAllApplied() { m_applied.assign(m_commands.size(), 1); }
 
 private:
-    const char* m_name;
+    std::string m_name;
     std::vector<std::unique_ptr<Command>> m_commands;
     std::vector<uint8_t> m_applied; // which sub-commands changed something on the last Execute
 };

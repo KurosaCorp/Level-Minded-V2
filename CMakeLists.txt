@@ -26,6 +26,8 @@ include(Shaders)
 # Data model and CPU-side geometry (no UI or GPU dependencies), shared by the editor and the tests.
 add_library(levelminded_core STATIC
     src/core/MeshId.h
+    src/mods/ModRuntime.cpp
+    src/mods/ModRuntime.h
     src/import/ModelImporter.cpp
     src/import/ModelImporter.h
     src/render/MeshGeometry.cpp
@@ -47,7 +49,7 @@ add_library(levelminded_core STATIC
     src/scene/Transform.h
 )
 target_include_directories(levelminded_core PUBLIC src)
-target_link_libraries(levelminded_core PRIVATE lm_loaders lm_simdjson)
+target_link_libraries(levelminded_core PRIVATE lm_loaders lm_simdjson lm_lua)
 lm_apply_project_warnings(levelminded_core)
 
 # Version-stamped resources, generated from res/*.in.
@@ -80,6 +82,8 @@ add_executable(LevelMinded WIN32
     src/editor/EditorCamera.h
     src/editor/HierarchyPanel.cpp
     src/editor/HierarchyPanel.h
+    src/editor/ModsPanel.cpp
+    src/editor/ModsPanel.h
     src/editor/NodeStyle.h
     src/editor/TransformGizmo.cpp
     src/editor/TransformGizmo.h
@@ -117,6 +121,13 @@ lm_add_shader(LevelMinded src/render/shaders/Mesh.hlsl  WirePSMain ps_5_0 g_Wire
 
 target_include_directories(LevelMinded PRIVATE src)
 target_link_libraries(LevelMinded PRIVATE levelminded_core imgui d3d11 dxgi dwmapi shell32 comdlg32)
+
+# Sample mods next to the development exe (bin/mods), so they load when running from the build tree.
+file(GLOB LM_SAMPLE_MODS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/examples/mods/*.lua")
+add_custom_command(TARGET LevelMinded POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:LevelMinded>/mods"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${LM_SAMPLE_MODS} "$<TARGET_FILE_DIR:LevelMinded>/mods"
+    COMMENT "Copying sample mods")
 target_compile_definitions(LevelMinded PRIVATE
     LM_VERSION_STRING="${PROJECT_VERSION}"
     LM_BUILD_CONFIG="$<IF:$<BOOL:${LM_SHIP_BUILD}>,Release build,$<CONFIG>>")
@@ -130,6 +141,7 @@ set_target_properties(LevelMinded PROPERTIES
 enable_testing()
 add_executable(LevelMindedTests tests/SceneTreeTests.cpp)
 target_link_libraries(LevelMindedTests PRIVATE levelminded_core)
+target_compile_definitions(LevelMindedTests PRIVATE LM_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 lm_apply_project_warnings(LevelMindedTests)
 set_target_properties(LevelMindedTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_test(NAME SceneTree COMMAND LevelMindedTests)
@@ -143,3 +155,5 @@ install(FILES "${imgui_SOURCE_DIR}/LICENSE.txt" DESTINATION . RENAME THIRD_PARTY
 install(FILES "${cgltf_SOURCE_DIR}/LICENSE" DESTINATION . RENAME THIRD_PARTY_LICENSE_cgltf.txt)
 install(FILES "${fast_obj_SOURCE_DIR}/LICENSE" DESTINATION . RENAME THIRD_PARTY_LICENSE_fast_obj.txt)
 install(FILES "${LM_SIMDJSON_DIR}/LICENSE-MIT" DESTINATION . RENAME THIRD_PARTY_LICENSE_simdjson.txt)
+install(FILES res/licenses/Lua.txt DESTINATION . RENAME THIRD_PARTY_LICENSE_Lua.txt)
+install(FILES examples/mods/hello_world.lua DESTINATION mods)

@@ -3,7 +3,8 @@ LevelMinded @PROJECT_VERSION@
 
 Optimized 3D map design tool.
 
-Run LevelMinded.exe. No installation needed; nothing else is required in this folder.
+Run LevelMinded.exe. No installation needed; nothing else is required in this folder
+(the mods folder is optional).
 
 Requirements
 ------------
@@ -38,6 +39,13 @@ File > Load (Ctrl+O), Save (Ctrl+S), Save As (Ctrl+Shift+S). Maps are .lmmap fil
 They keep the whole hierarchy, transforms, visibility, imported models (by file path) and the camera.
 A * in the title bar means unsaved changes; you are asked before they would be lost.
 
+Mods
+----
+Lua mods in the "mods" folder (.lua files, or folders with a main.lua) load at startup. The Mods panel
+shows them, their controls and logs; the Mods menu has their commands and "Reload Mods". Mods are
+sandboxed (no files or programs) and everything they change can be undone. mods\hello_world.lua is a
+sample. Writing mods: https://github.com/KurosaCorp/Level-Minded-V2/blob/main/docs/MODDING.md
+
 Importing models
 ----------------
 Drag .gltf, .glb or .obj files onto the window, or use File > Import Asset (Ctrl+I).
@@ -51,6 +59,7 @@ Command line (testing)
 --bench-out PATH   Benchmark report location
 --import PATH      Import a model into the Assets panel at startup (repeatable)
 --map PATH         Load a map at startup
+--mods PATH        Load mods from this folder
 
 Third-party software
 --------------------
@@ -58,3 +67,4 @@ Dear ImGui (MIT license), see THIRD_PARTY_LICENSE_DearImGui.txt.
 cgltf (MIT license), see THIRD_PARTY_LICENSE_cgltf.txt.
 fast_obj (MIT license), see THIRD_PARTY_LICENSE_fast_obj.txt.
 simdjson (Apache 2.0 / MIT, used under MIT), see THIRD_PARTY_LICENSE_simdjson.txt.
+Lua (MIT license), see THIRD_PARTY_LICENSE_Lua.txt.

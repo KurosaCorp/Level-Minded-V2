@@ -90,3 +90,25 @@ target_include_directories(lm_simdjson SYSTEM PUBLIC "${LM_SIMDJSON_DIR}")
 # covered); the AVX-512 and SSE4.2 variants would add ~200 KB to the exe for no gain at our file sizes.
 target_compile_definitions(lm_simdjson PUBLIC SIMDJSON_EXCEPTIONS=0 SIMDJSON_DISABLE_DEPRECATED_API=1
     SIMDJSON_IMPLEMENTATION_ICELAKE=0 SIMDJSON_IMPLEMENTATION_WESTMERE=0)
+
+# Lua 5.5 (mods): official source release, pinned by checksum, compiled as C++ so script errors are
+# C++ exceptions (destructors in the binding code run) instead of longjmp. Only the core and the
+# safe libraries are built: no io, os, debug or package (no files, processes or native libraries
+# for mods), and not the standalone interpreter/compiler.
+FetchContent_Declare(lua
+    URL      "https://www.lua.org/ftp/lua-5.5.1.tar.gz"
+    URL_HASH SHA256=1c4b4068d67061f2a2231ad2b5422e77acea1487ea9890f6320af614f4373dce
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR sources-only)
+FetchContent_MakeAvailable(lua)
+set(LM_LUA_SOURCES)
+foreach(name lapi lauxlib lbaselib lcode lcorolib lctype ldebug ldo ldump lfunc lgc llex lmathlib lmem lobject
+             lopcodes lparser lstate lstring lstrlib ltable ltablib ltm lundump lutf8lib lvm lzio)
+    list(APPEND LM_LUA_SOURCES "${lua_SOURCE_DIR}/src/${name}.c")
+endforeach()
+set_source_files_properties(${LM_LUA_SOURCES} PROPERTIES LANGUAGE CXX)
+add_library(lm_lua STATIC ${LM_LUA_SOURCES})
+target_include_directories(lm_lua SYSTEM PUBLIC "${lua_SOURCE_DIR}/src")
+# Optimized for size: mod scripts are small and event-driven; full /O2 /Ob3 inlining doubles Lua's size.
+target_compile_options(lm_lua PRIVATE /W1)
+set_target_properties(lm_lua PROPERTIES LM_OPTIMIZE_FOR_SIZE ON)

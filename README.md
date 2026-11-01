@@ -1,10 +1,10 @@
 # LevelMinded
 
-**LevelMinded is a lightweight, extremely optimized 3D map design tool for Windows.** It gives level designers a fast 3D viewport, a group-based hierarchy for organizing a map, and a palette of placeable items, in a single portable executable of about 1.5 MB that uses almost no CPU while you are not interacting with it.
+**LevelMinded is a lightweight, extremely optimized 3D map design tool for Windows.** It gives level designers a fast 3D viewport, a group-based hierarchy for organizing a map, and a palette of placeable items, in a single portable executable of about 1.8 MB that uses almost no CPU while you are not interacting with it.
 
 ![LevelMinded overview](docs/overview.png)
 
-> **Status:** v1.0 is the first public release, focused on the core editor: viewport, hierarchy and asset palette. Click selection, move / rotate / scale tools, model importing (glTF and OBJ), saving / loading maps and undo / redo are now on `main`. Mod support is next (see [Roadmap](#roadmap)).
+> **Status:** v1.0 is the first public release, focused on the core editor: viewport, hierarchy and asset palette. Click selection, move / rotate / scale tools, model importing (glTF and OBJ), saving / loading maps, undo / redo and Lua mods are now on `main`.
 
 ## Contents
 
@@ -15,6 +15,7 @@
 - [Left Panel: Hierarchy](#left-panel-hierarchy)
 - [Right Panel: Assets](#right-panel-assets)
 - [Undo and Redo](#undo-and-redo)
+- [Mods](#mods)
 - [Saving and Loading Maps](#saving-and-loading-maps)
 - [Stats Overlay](#stats-overlay)
 - [Performance](#performance)
@@ -32,6 +33,7 @@
 - **Click to select, drag to transform:** click any item in the 3D view to select it, then move, rotate or scale it with an on-screen gizmo (W / E / R), with optional snapping.
 - **Group hierarchy:** nest items in groups, select a whole group with one click, hide and show entire groups, and reorganize everything with drag and drop.
 - **Asset palette:** click an item to place it straight into the group you are working in.
+- **Mods:** extend the editor with Lua scripts dropped into the `mods` folder: new buttons, menu commands and tools that build or change the map, safely sandboxed and fully undoable.
 - **Undo and redo:** every edit (placing, deleting, moving, rotating, scaling, hiding, renaming, regrouping) can be undone with **Ctrl + Z** and redone with **Ctrl + Y**.
 - **Save and load maps:** readable JSON map files that bring back every group, item, transform, visibility setting and imported model exactly as you left them.
 - **Bring your own models:** drag `.gltf`, `.glb` or `.obj` files onto the window (or use **File > Import Asset**) and they join the palette, at their real size and orientation.
@@ -61,8 +63,10 @@ There is nothing to install. The folder contains only:
 | `THIRD_PARTY_LICENSE_cgltf.txt` | License of the cgltf library used to read glTF models |
 | `THIRD_PARTY_LICENSE_fast_obj.txt` | License of the fast_obj library used to read OBJ models |
 | `THIRD_PARTY_LICENSE_simdjson.txt` | License of the simdjson library used to read map files |
+| `THIRD_PARTY_LICENSE_Lua.txt` | License of the Lua language used for mods |
+| `mods/hello_world.lua` | A sample mod (see [Mods](#mods)); delete it if you don't want it |
 
-To remove LevelMinded, delete the folder. It does not write settings, registry entries or files anywhere else.
+To remove LevelMinded, delete the folder. It does not write settings, registry entries or files anywhere else (only the maps you save yourself).
 
 > **"Windows protected your PC"?** The executable is not code-signed yet, so Windows SmartScreen may warn the first time you run it. Click **More info**, then **Run anyway**. Your antivirus may also scan the new file once, which can make the very first launch a little slower.
 
@@ -275,6 +279,38 @@ Every change to the map can be undone, step by step:
 - **Selection, camera and expand / collapse** are not steps: undo doesn't change what you are looking at or what is selected.
 - **History size:** the last **100** steps are kept (older ones are forgotten, oldest first), and very large deletes are limited by a memory budget, so the history never grows without bound in long sessions. Making a new change after undoing discards the steps you could have redone. Loading a map starts a fresh history.
 
+## Mods
+
+![Mods panel](docs/mods-panel.png)
+
+LevelMinded runs **Lua mods**: small script files that add buttons, menu commands and tools, and that can build or change the map. Writing one needs no compiler and no LevelMinded files, only a text editor. Section 3 of the [License](#license) explicitly allows you to create and share mods like these.
+
+- **Install a mod:** put its `.lua` file (or its folder with a `main.lua`) in the `mods` folder next to `LevelMinded.exe` (**Mods > Open Mods Folder** opens it). Mods load automatically when LevelMinded starts. After adding or editing mods, click **Reload** in the Mods panel or use **Mods > Reload Mods**.
+- **Mods panel** (below the Assets palette): every loaded mod with its status, memory use, log, and its own controls.
+- **Mods menu:** commands that mods add, grouped by mod.
+- **Undoable:** everything a mod changes in the map is a normal undo step (**Ctrl+Z**).
+- **Safe:** each mod runs in its own sandbox. It has no access to files, programs or native code and never sees the editor's memory, only handles and copies, with a memory cap and a time limit per call. A mod that fails is stopped and reported; the editor and the other mods keep running.
+
+The release package includes a sample, `mods/hello_world.lua`. It greets you at startup, adds a **Spawn Hello Cube** button to the Mods panel and a **Mods > Hello World > Spawn a ring of cubes** command:
+
+```lua
+mod_info = { name = "Hello World" }
+
+function on_load()
+    print("Hello, World! Running in LevelMinded " .. lm.version)
+    lm.notify("Hello, World!")
+end
+
+function on_ui()
+    if lm.ui.button("Spawn Hello Cube") then
+        local cube = lm.scene.spawn("Cube", { position = { 0, -14, 0.5 } })
+        lm.scene.select(cube)
+    end
+end
+```
+
+The full API (callbacks, `lm.scene`, `lm.ui`, menus, undo groups, limits) is documented in **[docs/MODDING.md](docs/MODDING.md)**.
+
 ## Saving and Loading Maps
 
 Maps are saved as `.lmmap` files from the **File** menu:
@@ -349,6 +385,7 @@ You can measure it on your own machine with the built-in benchmark:
 | `--bench-out PATH` | Where to write the report (default: `bench.txt`) |
 | `--import PATH` | Imports a model into the palette at startup (can be repeated) |
 | `--map PATH` | Loads a map at startup |
+| `--mods PATH` | Loads mods from this folder instead of `mods` next to the exe |
 
 ```bat
 LevelMinded.exe --stress 100000 --bench 300
@@ -365,14 +402,14 @@ v1.0 is the foundation release. Please be aware that:
 
 ## Roadmap
 
-- **Mod support:** extend LevelMinded with plug-ins and add-ons (see section 3 of the [License](#license)).
+- More of the editor available to mods (custom panels, map events, reading imported model details).
 - Textures for imported models.
 
 ## Building from Source
 
 You only need this if you want to work on LevelMinded itself.
 
-**Requirements:** Windows 10/11 and [Visual Studio 2022 or later](https://visualstudio.microsoft.com/) with the **"Desktop development with C++"** workload. CMake and Ninja are included with that workload. Dear ImGui, cgltf, fast_obj and simdjson are downloaded automatically during the first build.
+**Requirements:** Windows 10/11 and [Visual Studio 2022 or later](https://visualstudio.microsoft.com/) with the **"Desktop development with C++"** workload. CMake and Ninja are included with that workload. Dear ImGui, cgltf, fast_obj, simdjson and Lua are downloaded automatically during the first build.
 
 ```bat
 git clone https://github.com/KurosaCorp/Level-Minded-V2.git
@@ -389,7 +426,7 @@ cd Level-Minded-V2
 
 The scripts find Visual Studio automatically, so no Developer Command Prompt is needed.
 
-**Technology:** C++20, CMake, Direct3D 11, [Dear ImGui](https://github.com/ocornut/imgui) (docking branch), [cgltf](https://github.com/jkuhlmann/cgltf), [fast_obj](https://github.com/thisistherk/fast_obj) and [simdjson](https://github.com/simdjson/simdjson).
+**Technology:** C++20, CMake, Direct3D 11, [Dear ImGui](https://github.com/ocornut/imgui) (docking branch), [cgltf](https://github.com/jkuhlmann/cgltf), [fast_obj](https://github.com/thisistherk/fast_obj), [simdjson](https://github.com/simdjson/simdjson) and [Lua](https://www.lua.org/).
 
 ## Third-Party Software
 
@@ -401,6 +438,7 @@ LevelMinded uses these libraries, all licensed under the MIT License (simdjson i
 | [cgltf](https://github.com/jkuhlmann/cgltf) by Johannes Kuhlmann | Reading glTF models | `THIRD_PARTY_LICENSE_cgltf.txt` |
 | [fast_obj](https://github.com/thisistherk/fast_obj) by Richard Knight | Reading OBJ models | `THIRD_PARTY_LICENSE_fast_obj.txt` |
 | [simdjson](https://github.com/simdjson/simdjson) by the simdjson authors | Reading map files | `THIRD_PARTY_LICENSE_simdjson.txt` |
+| [Lua](https://www.lua.org/) by Lua.org, PUC-Rio | The mod scripting language | `THIRD_PARTY_LICENSE_Lua.txt` |
 
 ## License
 

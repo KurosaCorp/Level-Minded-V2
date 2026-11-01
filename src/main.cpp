@@ -13,6 +13,7 @@ namespace {
 //   --bench-out PATH  benchmark report path (default: bench.txt in the working directory)
 //   --import PATH     import a .gltf/.glb/.obj model into the Assets palette (repeatable)
 //   --map PATH        load a .lmmap map at startup
+//   --mods PATH       folder to load Lua mods from (default: "mods" next to the exe)
 lm::AppOptions ParseCommandLine()
 {
     lm::AppOptions options;
@@ -33,6 +34,8 @@ lm::AppOptions ParseCommandLine()
             options.importFiles.emplace_back(value), ++i;
         else if (std::wcscmp(key, L"--map") == 0)
             options.mapFile = value, ++i;
+        else if (std::wcscmp(key, L"--mods") == 0)
+            options.modsFolder = value, ++i;
     }
     ::LocalFree(argv);
     return options;

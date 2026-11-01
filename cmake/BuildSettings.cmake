@@ -22,10 +22,16 @@ set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
 
 # Replace CMake's default optimization flags with our own.
-set(CMAKE_CXX_FLAGS_RELEASE        "/O2 /Ob3 /DNDEBUG")
-set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "/O2 /Ob3 /Zi /DNDEBUG")
-set(CMAKE_C_FLAGS_RELEASE          "/O2 /Ob3 /DNDEBUG")   # C: the model loaders
-set(CMAKE_C_FLAGS_RELWITHDEBINFO   "/O2 /Ob3 /Zi /DNDEBUG")
+# The optimization level itself is set per target below: /O2 /Ob3 (speed), or /O1 /Ob1 for targets
+# with the LM_OPTIMIZE_FOR_SIZE property (Lua: small, rarely hot).
+set(CMAKE_CXX_FLAGS_RELEASE        "/DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "/Zi /DNDEBUG")
+set(CMAKE_C_FLAGS_RELEASE          "/DNDEBUG")   # C: the model loaders
+set(CMAKE_C_FLAGS_RELWITHDEBINFO   "/Zi /DNDEBUG")
+add_compile_options(
+    "$<$<NOT:$<CONFIG:Debug>>:$<IF:$<BOOL:$<TARGET_PROPERTY:LM_OPTIMIZE_FOR_SIZE>>,/O1,/O2>>"
+    "$<$<NOT:$<CONFIG:Debug>>:$<IF:$<BOOL:$<TARGET_PROPERTY:LM_OPTIMIZE_FOR_SIZE>>,/Ob1,/Ob3>>"
+)
 
 add_compile_options(
     "$<$<COMPILE_LANGUAGE:CXX>:/permissive->"       # standards conformance

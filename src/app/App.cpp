@@ -14,6 +14,7 @@
 #include <cderr.h>
 #include <commdlg.h>
 #include <psapi.h>
+#include <shellapi.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -110,6 +111,23 @@ bool App::Init(const AppOptions& options)
     m_window.Show();
     if (!m_options.mapFile.empty())
         LoadMapFrom(m_options.mapFile);
+
+    // Mods: "mods" next to the exe unless --mods says otherwise. They run after the map is ready.
+    if (!m_options.modsFolder.empty()) {
+        m_modsFolder = m_options.modsFolder;
+    } else {
+        wchar_t exe[MAX_PATH] = {};
+        ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        m_modsFolder = std::filesystem::path(exe).parent_path() / L"mods";
+    }
+    ModContext modContext;
+    modContext.scene = &m_scene;
+    modContext.history = &m_history;
+    modContext.catalog = &m_catalog;
+    modContext.notify = [this](const std::string& message) { SetFileStatus(message, false); };
+    modContext.version = LM_VERSION_STRING;
+    m_mods = std::make_unique<ModRuntime>(std::move(modContext));
+    LoadMods();
     UpdateWindowTitle();
     MarkActive();
     return true;
@@ -117,6 +135,7 @@ bool App::Init(const AppOptions& options)
 
 void App::Shutdown()
 {
+    m_mods.reset(); // on_unload runs while the scene still exists
     if (m_imguiReady) {
         m_imguiReady = false;
         ImGui_ImplDX11_Shutdown();
@@ -185,7 +204,13 @@ void App::RenderFrame()
         BenchBeforeFrame();
 
     // Menu bar first: the dockspace below fills what is left of the window.
+    if (m_reloadModsRequested) { // between mod calls, never from inside one
+        m_reloadModsRequested = false;
+        LoadMods();
+    }
     DrawMainMenu();
+    if (m_mods)
+        m_mods->Frame(ImGui::GetIO().DeltaTime);
     // Models dropped on the window (or chosen in the import dialog) join the palette this frame.
     if (!m_pendingImports.empty())
         ImportPendingFiles();
@@ -217,6 +242,15 @@ void App::RenderFrame()
     {
         ProfileScope zone(Zone::HierarchyPanel);
         m_hierarchy.Draw(m_scene, m_history, dpiScale);
+        if (m_mods) {
+            const ModsPanel::Actions actions = m_modsPanel.Draw(*m_mods, m_modsFolder, dpiScale);
+            m_reloadModsRequested |= actions.reload;
+            if (actions.openFolder) {
+                std::error_code error;
+                std::filesystem::create_directories(m_modsFolder, error);
+                ::ShellExecuteW(m_window.Handle(), L"open", m_modsFolder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            }
+        }
     }
     {
         ProfileScope zone(Zone::ViewportInput);
@@ -319,6 +353,7 @@ void App::DrawMainMenu()
             ImGui::TextDisabled("History: %zu of %zu steps", m_history.UndoCount(), m_history.MaxSteps());
             ImGui::EndMenu();
         }
+        DrawModsMenu();
         // Result of the last save / load, right-aligned.
         if (!m_fileStatus.empty()) {
             const float width = ImGui::CalcTextSize(m_fileStatus.c_str()).x + ImGui::GetStyle().ItemSpacing.x * 2.0f;
@@ -394,6 +429,56 @@ void App::AfterModalDialog()
         ImGui::GetIO().ClearInputMouse();
     }
     MarkActive();
+}
+
+void App::LoadMods()
+{
+    if (!m_mods)
+        return;
+    m_mods->UnloadAll();
+    m_fileStatus.clear();
+    const size_t count = m_mods->LoadFolder(m_modsFolder);
+    size_t failed = 0;
+    for (size_t i = 0; i < m_mods->Count(); ++i)
+        failed += m_mods->Info(i).state == ModState::Failed ? 1 : 0;
+    if (failed > 0)
+        SetFileStatus(std::to_string(failed) + " of " + std::to_string(count) + " mods failed to load (see the Mods panel)", true);
+    else if (count > 0 && m_fileStatus.empty()) // keep a mod's own lm.notify message
+        SetFileStatus("Loaded " + std::to_string(count) + (count == 1 ? " mod" : " mods"), false);
+    MarkActive();
+}
+
+void App::DrawModsMenu()
+{
+    if (!m_mods || !ImGui::BeginMenu("Mods"))
+        return;
+    // Items mods registered with lm.add_menu_item, grouped by mod.
+    const std::vector<ModRuntime::MenuItem>& items = m_mods->MenuItems();
+    size_t runItem = items.size();
+    for (size_t mod = 0; mod < m_mods->Count(); ++mod) {
+        bool any = false;
+        for (const ModRuntime::MenuItem& item : items)
+            any |= item.mod == mod;
+        if (!any || !ImGui::BeginMenu(m_mods->Info(mod).name.c_str()))
+            continue;
+        for (size_t i = 0; i < items.size(); ++i)
+            if (items[i].mod == mod && ImGui::MenuItem(items[i].label.c_str()))
+                runItem = i;
+        ImGui::EndMenu();
+    }
+    if (items.empty())
+        ImGui::TextDisabled("No mod menu items");
+    ImGui::Separator();
+    if (ImGui::MenuItem("Reload Mods"))
+        m_reloadModsRequested = true;
+    if (ImGui::MenuItem("Open Mods Folder")) {
+        std::error_code error;
+        std::filesystem::create_directories(m_modsFolder, error);
+        ::ShellExecuteW(m_window.Handle(), L"open", m_modsFolder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+    ImGui::EndMenu();
+    if (runItem < items.size())
+        m_mods->RunMenuItem(runItem); // after the menu: the item may change the scene
 }
 
 void App::UndoStep()
@@ -808,7 +893,10 @@ void App::BuildDefaultLayout(ImGuiID dockspaceId)
     ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, 0.2f, &left, &center);
     ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.22f, &right, &center);
     ImGui::DockBuilderDockWindow(HierarchyPanel::kWindowName, left);
+    ImGuiID rightBottom = 0;
+    ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.35f, &rightBottom, &right);
     ImGui::DockBuilderDockWindow(AssetPanel::kWindowName, right);
+    ImGui::DockBuilderDockWindow(ModsPanel::kWindowName, rightBottom);
     ImGui::DockBuilderFinish(dockspaceId);
 }
 

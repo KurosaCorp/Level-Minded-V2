@@ -4,7 +4,9 @@
 #include "core/Profiler.h"
 #include "editor/AssetPanel.h"
 #include "editor/HierarchyPanel.h"
+#include "editor/ModsPanel.h"
 #include "editor/Viewport.h"
+#include "mods/ModRuntime.h"
 #include "platform/Window.h"
 #include "render/GpuDevice.h"
 #include "render/MeshLibrary.h"
@@ -15,6 +17,7 @@
 
 #include <array>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -28,6 +31,7 @@ struct AppOptions {
     std::wstring benchOutput = L"bench.txt"; // --bench-out PATH
     std::vector<std::wstring> importFiles; // --import PATH (repeatable): import models at startup
     std::wstring mapFile;                   // --map PATH: load this map at startup
+    std::wstring modsFolder;                // --mods PATH: mods folder (default: "mods" next to the exe)
 };
 
 // Owns the window, GPU device and UI, and runs the event-driven main loop.
@@ -87,6 +91,8 @@ private:
     void SetFileStatus(std::string text, bool isError);
     void UndoStep();
     void RedoStep();
+    void LoadMods(); // (re)loads every mod in m_modsFolder
+    void DrawModsMenu();
     // Call after every modal OS dialog (file dialogs, message boxes): resets ImGui's key/mouse state.
     void AfterModalDialog();
     void MarkActive();
@@ -111,6 +117,12 @@ private:
     AssetPanel m_assets;
     std::vector<std::wstring> m_pendingImports;
     bool m_openImportDialog = false; // opened after the frame is presented (the dialog is modal)
+
+    // Lua mods (mods/ folder): sandboxed, edit the scene through m_history like everything else.
+    std::unique_ptr<ModRuntime> m_mods;
+    std::filesystem::path m_modsFolder;
+    ModsPanel m_modsPanel;
+    bool m_reloadModsRequested = false;
 
     // Current map file (empty = untitled) and what was last saved or loaded, for "unsaved changes".
     std::filesystem::path m_mapPath;

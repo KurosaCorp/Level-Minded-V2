@@ -24,7 +24,8 @@ Clean "dist" preset build (Release + `LM_SHIP_BUILD`: ImGui demo/debug tools com
 verifies the exe (GUI subsystem, no PDB record, only Windows system DLLs), then `cmake --install`s it into
 `dist\LevelMinded_v<major>.<minor>\` (exe, README, Dear ImGui license) and zips it. The version comes from
 `project(VERSION)` in `CMakeLists.txt`; README, manifest and the version resource are generated from `res/*.in`.
-The exe must stay self-contained: static CRT, shaders compiled in, no files loaded at startup.
+The exe must stay self-contained: static CRT, shaders compiled in, nothing required at startup (the optional
+`mods\` folder next to it is scanned; the package ships `mods\hello_world.lua` from `examples/mods/`).
 
 ## Profiling
 
@@ -41,6 +42,9 @@ Output: `build/<preset>/bin/LevelMinded.exe`. Dear ImGui, cgltf and fast_obj are
 in `cmake/Dependencies.cmake`); the two loaders build as the C library `lm_loaders` (the project enables C for it).
 simdjson's single-header amalgamation is downloaded with checksums (`lm_download_checked`) into `lm_simdjson`
 (no exceptions, AVX2 + fallback kernels only); only `src/scene/MapFile.cpp` includes the 10 MB header.
+Lua 5.5 (`lm_lua`, from lua.org, pinned SHA256) is compiled **as C++** (errors are exceptions, so binding
+destructors run) and without `io`/`os`/`debug`/`package`/`linit` (not even linked). `--mods PATH` overrides
+the mods folder; samples in `examples/mods/` are copied to `bin/mods` after each build.
 
 ## Layout
 
@@ -59,13 +63,16 @@ simdjson's single-header amalgamation is downloaded with checksums (`lm_download
 - `src/scene/Transform.h` - TRS transform, `ItemMatrix`, gizmo operations (`Translated`, `RotatedAbout`, `ScaledAbout`)
 - `src/scene/Picking.*` - `ScenePicker`: ray vs exact mesh triangles of visible items (click selection)
 - `src/scene/Commands.*` - undo/redo: `Command` subclasses (spawn, delete, transform, visibility, rename, move, macro) + `CommandHistory` ring
+- `src/mods/ModRuntime.*` - Lua mods: one sandboxed state per mod, heap cap + instruction budget, the `lm.*` API
+- `src/editor/ModsPanel.*` - Mods dock panel (status, log, each mod's `on_ui` via the `ModUi` interface)
+- `docs/MODDING.md` - the public mod API reference (keep it in sync with `ModApi` in `ModRuntime.cpp`)
 - `src/scene/MapFile.*` - .lmmap save (hand-written JSON) / load (simdjson, two-phase, all-or-nothing)
 - `src/scene/ItemCatalog.*` - built-in item types, `AssetCatalog` (built-in + imported items), `SpawnCatalogItem`
 - `src/scene/MockLevel.*` - sample level used until real level loading exists
 - `src/editor/HierarchyPanel.*` - left dock panel: tree view, selection, eye toggles, drag & drop, active group
 - `src/editor/AssetPanel.*` - right dock panel: catalog tiles, import status line; click spawns into the active group
 - `src/editor/NodeStyle.h` - per-kind colors shared by panels and viewport
-- `tests/SceneTreeTests.cpp` - unit tests (tree, catalog, mesh winding, transforms, picking, import, maps, undo) + benchmark (`LevelMindedTests`)
+- `tests/SceneTreeTests.cpp` - unit tests (tree, catalog, mesh winding, transforms, picking, import, maps, undo, mods) + benchmark (`LevelMindedTests`)
 - Static lib `levelminded_core` = `src/scene/*` + `src/import/*` + `MeshGeometry`/`MeshLibrary` (no UI/GPU deps)
 - `src/editor/EditorCamera.*` - orbit/pan/dolly/fly camera math
 - `src/editor/Viewport.*` - camera input, click selection, gizmo toolbar + shortcuts, keyboard focus, orientation axes
@@ -147,6 +154,12 @@ simdjson's single-header amalgamation is downloaded with checksums (`lm_download
   them back uses `Restore`, which reinstates the original ids at the original place; keep ids stable,
   never re-create a node with a new id in an undo/redo path. The history is a fixed 100-step ring plus a
   memory budget (`MemoryBytes()` per command); new commands that hold big data must report it.
+- Mod API rules: mods only ever get integer `NodeId` handles and copies (`lua_pushlstring`), never pointers
+  or views into editor memory. Every binding validates handles (`CheckNode`) and arguments before use, and
+  every scene edit goes through `ModApi::Run` -> `CommandHistory` (undoable, `lm.undo_group` rolls back on
+  error). Mods can't call ImGui Begin/End/Push/Pop directly (only the `ModUi` widget calls), and are never
+  called while a structural edit is in progress (reload happens at frame start). Extend the API by adding
+  bindings to `ModApi` + `docs/MODDING.md` + `TestModSandbox`.
 - After every modal OS dialog (file dialogs, message boxes) call `App::AfterModalDialog()`: key-ups that
   happen while it is open never reach ImGui, so shortcuts would get stuck otherwise.
 - Model files are opened through the loaders' file callbacks with `_wfopen_s` on UTF-8 paths (non-ASCII

@@ -2,6 +2,7 @@
 // (or `ctest` in the build directory). Exit code is non-zero on failure.
 
 #include "import/ModelImporter.h"
+#include "mods/ModRuntime.h"
 #include "render/MeshGeometry.h"
 #include "render/MeshLibrary.h"
 #include "scene/Commands.h"
@@ -11,6 +12,7 @@
 #include "scene/Picking.h"
 #include "scene/SceneTree.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <iterator>
@@ -1283,6 +1285,181 @@ void TestUndoMemoryStability()
                 history.Size(), double(history.MemoryBytes()) / (1024.0 * 1024.0), afterAll - afterWarmup);
 }
 
+// ---- Mods
+
+// Records what a mod draws and "clicks" buttons by label.
+class FakeModUi final : public ModUi {
+public:
+    std::vector<std::string> texts;
+    std::string press; // label of the button to report as clicked
+    void Text(const char* text) override { texts.emplace_back(text); }
+    bool Button(const char* label) override { return press == label; }
+    bool Checkbox(const char*, bool&) override { return false; }
+    bool Slider(const char*, float& value, float min, float max) override
+    {
+        value = std::clamp(value, min, max);
+        return false;
+    }
+    void Separator() override {}
+    void SameLine() override {}
+};
+
+struct ModFixture {
+    SceneTree scene;
+    CommandHistory history;
+    AssetCatalog catalog;
+    std::vector<std::string> notifications;
+    ModContext Context()
+    {
+        ModContext context;
+        context.scene = &scene;
+        context.history = &history;
+        context.catalog = &catalog;
+        context.notify = [this](const std::string& message) { notifications.push_back(message); };
+        context.version = "test";
+        return context;
+    }
+};
+
+bool LogHas(const ModInfo& info, std::string_view text)
+{
+    for (const std::string& line : info.log)
+        if (line.find(text) != std::string::npos)
+            return true;
+    return false;
+}
+
+void TestModHelloWorld()
+{
+    ModFixture f;
+    BuildMockLevel(f.scene);
+    const uint32_t nodesBefore = f.scene.Size();
+    ModRuntime mods(f.Context());
+    const size_t mod = mods.LoadFile(std::filesystem::path(LM_SOURCE_DIR) / "examples" / "mods" / "hello_world.lua");
+    const ModInfo& info = mods.Info(mod);
+    CHECK(info.state == ModState::Running && info.error.empty());
+    CHECK(info.name == "Hello World" && info.hasUi);
+    CHECK(LogHas(info, "Hello, World! Running in LevelMinded test")); // on_load ran
+    CHECK(f.notifications.size() == 1 && f.notifications[0] == "Hello World: Hello, World!");
+    CHECK(mods.MenuItems().size() == 1 && mods.MenuItems()[0].label == "Spawn a ring of cubes");
+    CHECK(f.scene.Size() == nodesBefore && !f.history.CanUndo()); // loading changed nothing
+
+    // Its button spawns an entity through the API (an undoable step) and selects it.
+    FakeModUi ui;
+    mods.DrawUi(mod, ui);
+    CHECK(f.scene.Size() == nodesBefore && !ui.texts.empty()); // drawn, nothing clicked
+    ui.press = "Spawn Hello Cube";
+    ui.texts.clear();
+    mods.DrawUi(mod, ui);
+    const NodeId cube = FindByName(f.scene, "Hello_Cube_1");
+    CHECK(cube != kInvalidNode && f.scene.Size() == nodesBefore + 1);
+    CHECK(Near3(f.scene.TransformAt(f.scene.IndexOf(cube)).position, 0.0f, -14.0f, 0.5f));
+    CHECK(Selected(f.scene, cube) && f.scene.SelectedItemCount() == 1);
+    CHECK(std::find(ui.texts.begin(), ui.texts.end(), "1 spawned") != ui.texts.end());
+    CHECK(LogHas(mods.Info(mod), "Spawned Hello_Cube_1"));
+    CHECK(f.history.UndoCount() == 1 && std::string(f.history.UndoName()) == "Place Item");
+    f.history.Undo(f.scene);
+    CHECK(!f.scene.Contains(cube) && f.scene.Size() == nodesBefore);
+
+    // Its menu item builds a group of 8 cubes as one undo step.
+    mods.RunMenuItem(0);
+    const NodeId ring = FindByName(f.scene, "Hello Ring");
+    CHECK(ring != kInvalidNode && f.scene.NodeAt(f.scene.IndexOf(ring)).subtreeSize == 9);
+    CHECK(std::string(f.history.UndoName()) == "Hello World ring" && f.history.UndoCount() == 1);
+    f.history.Undo(f.scene);
+    CHECK(!f.scene.Contains(ring) && f.scene.Size() == nodesBefore && f.scene.Validate());
+    f.history.Redo(f.scene);
+    CHECK(f.scene.Contains(ring) && f.scene.Validate());
+    CHECK(mods.Info(mod).state == ModState::Running);
+}
+
+void TestModSandbox()
+{
+    const std::filesystem::path dir = TestDir() / "mods";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir / "folder_mod");
+    WriteText(dir / "a_sandbox.lua",
+              "local blocked = { io = io, os = os, debug = debug, package = package, require = require, load = load,\n"
+              "                  dofile = dofile, loadfile = loadfile, dump = string.dump }\n"
+              "for name, value in pairs(blocked) do error(name .. ' should not exist') end\n"
+              "print('sandbox ok', math.floor(2.5), string.format('%d', 7), #table.pack(1, 2, 3))\n");
+    WriteText(dir / "b_memory.lua", "function on_load() local t = {} for i = 1, 100000000 do t[i] = {i} end end\n");
+    WriteText(dir / "c_loop.lua", "function on_load() while true do end end\n");
+    WriteText(dir / "d_badhandle.lua", "function on_load() lm.scene.set_position(424242, 0, 0, 0) end\n");
+    WriteText(dir / "e_syntax.lua", "function on_load(\n");
+    WriteText(dir / "f_bytecode.lua", std::string("\x1bLua\x55\x00 not really bytecode", 26));
+    WriteText(dir / "g_ui_outside.lua", "function on_load() lm.ui.text('too early') end\n");
+    WriteText(dir / "folder_mod" / "main.lua",
+              "mod_info = { name = 'Folder Mod' }\n"
+              "function on_load()\n"
+              "  -- a failing undo group rolls back everything it did\n"
+              "  local ok, err = pcall(lm.undo_group, 'broken', function()\n"
+              "    for i = 1, 3 do lm.scene.spawn('Cube', { name = 'Rolled_back_' .. i }) end\n"
+              "    error('boom')\n"
+              "  end)\n"
+              "  assert(not ok and string.find(err, 'boom'))\n"
+              "  assert(lm.scene.find('Rolled_back_1') == nil)\n"
+              "  lm.undo_group('two cubes', function()\n"
+              "    lm.scene.spawn('Cube', { name = 'Kept_1', position = {1, 2, 3}, scale = 2 })\n"
+              "    lm.scene.spawn('Sphere', { name = 'Kept_2', rotation = {0, 0, 90} })\n"
+              "  end)\n"
+              "  local g = lm.scene.create_group('Modded')\n"
+              "  lm.scene.move(lm.scene.find('Kept_1'), g)\n"
+              "  lm.scene.set_visible(g, false)\n"
+              "  lm.scene.rename(g, 'Modded group')\n"
+              "  assert(lm.scene.kind(g) == 'group' and lm.scene.parent(lm.scene.find('Kept_1')) == g)\n"
+              "  local x, y, z = lm.scene.position(lm.scene.find('Kept_1'))\n"
+              "  assert(x == 1 and y == 2 and z == 3)\n"
+              "  assert(#lm.assets.list() >= 9 and #lm.scene.children(g) == 1)\n"
+              "  assert(not pcall(lm.scene.spawn, 'No such item'))\n"
+              "  assert(not pcall(lm.scene.move, g, lm.scene.find('Kept_2')))  -- items can't hold children\n"
+              "end\n"
+              "function on_unload() lm.notify('bye') end\n");
+
+    ModFixture f;
+    BuildMockLevel(f.scene);
+    const std::string before = SceneState(f.scene);
+    ModLimits limits;
+    limits.memoryBytes = 8u << 20;
+    limits.instructionsPerCall = 5'000'000;
+    ModRuntime mods(f.Context(), limits);
+    CHECK(mods.LoadFolder(dir) == 8 && mods.Count() == 8);
+    CHECK(mods.LoadFolder(dir / "missing") == 0);
+
+    const auto info = [&](std::string_view name) -> const ModInfo& {
+        for (size_t i = 0; i < mods.Count(); ++i)
+            if (mods.Info(i).name == name)
+                return mods.Info(i);
+        static ModInfo none;
+        CHECK(!"mod not found");
+        return none;
+    };
+    CHECK(info("a_sandbox").state == ModState::Running && LogHas(info("a_sandbox"), "sandbox ok\t2\t7\t3"));
+    CHECK(info("b_memory").state == ModState::Failed && info("b_memory").error.find("memory") != std::string::npos);
+    CHECK(info("b_memory").memoryBytes == 0 && info("b_memory").peakMemoryBytes <= limits.memoryBytes);
+    CHECK(info("c_loop").state == ModState::Failed && info("c_loop").error.find("too long") != std::string::npos);
+    CHECK(info("d_badhandle").state == ModState::Failed && info("d_badhandle").error.find("not a node") != std::string::npos);
+    CHECK(info("e_syntax").state == ModState::Failed && info("e_syntax").error.find("e_syntax.lua:") != std::string::npos);
+    CHECK(info("f_bytecode").state == ModState::Failed && info("f_bytecode").error.find("precompiled") != std::string::npos);
+    CHECK(info("g_ui_outside").state == ModState::Failed && info("g_ui_outside").error.find("on_ui") != std::string::npos);
+    const ModInfo& folderMod = info("Folder Mod");
+    CHECK(folderMod.state == ModState::Running);
+    if (folderMod.state != ModState::Running)
+        std::fprintf(stderr, "Folder Mod: %s\n", folderMod.error.c_str());
+
+    // The failing mods changed nothing; the folder mod's edits are three undo steps (+ group steps).
+    CHECK(FindByName(f.scene, "Kept_1") != kInvalidNode && FindByName(f.scene, "Rolled_back_1") == kInvalidNode);
+    CHECK(!Visible(f.scene, FindByName(f.scene, "Kept_1")) && FindByName(f.scene, "Modded group") != kInvalidNode);
+    CHECK(f.scene.Validate());
+    while (f.history.Undo(f.scene)) {
+    }
+    CHECK(SceneState(f.scene) == before); // every mod edit was undoable
+
+    // Unloading calls on_unload of running mods only.
+    mods.UnloadAll();
+    CHECK(mods.Count() == 0 && f.notifications.size() == 1 && f.notifications[0] == "Folder Mod: bye");
+}
+
 template <typename F>
 double TimeMicroseconds(F&& work, int repeats = 20)
 {
@@ -1405,6 +1582,8 @@ int main()
     TestUndoRedo();
     TestHistoryLimits();
     TestUndoMemoryStability();
+    TestModHelloWorld();
+    TestModSandbox();
     Benchmark();
 
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
