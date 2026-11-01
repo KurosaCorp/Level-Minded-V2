@@ -58,13 +58,14 @@ simdjson's single-header amalgamation is downloaded with checksums (`lm_download
 - `src/scene/SceneTree.*` - hierarchy of groups/items with per-item transform + half extents + mesh
 - `src/scene/Transform.h` - TRS transform, `ItemMatrix`, gizmo operations (`Translated`, `RotatedAbout`, `ScaledAbout`)
 - `src/scene/Picking.*` - `ScenePicker`: ray vs exact mesh triangles of visible items (click selection)
+- `src/scene/Commands.*` - undo/redo: `Command` subclasses (spawn, delete, transform, visibility, rename, move, macro) + `CommandHistory` ring
 - `src/scene/MapFile.*` - .lmmap save (hand-written JSON) / load (simdjson, two-phase, all-or-nothing)
 - `src/scene/ItemCatalog.*` - built-in item types, `AssetCatalog` (built-in + imported items), `SpawnCatalogItem`
 - `src/scene/MockLevel.*` - sample level used until real level loading exists
 - `src/editor/HierarchyPanel.*` - left dock panel: tree view, selection, eye toggles, drag & drop, active group
 - `src/editor/AssetPanel.*` - right dock panel: catalog tiles, import status line; click spawns into the active group
 - `src/editor/NodeStyle.h` - per-kind colors shared by panels and viewport
-- `tests/SceneTreeTests.cpp` - unit tests (tree, catalog, mesh winding, transforms, picking, import, maps) + benchmark (`LevelMindedTests`)
+- `tests/SceneTreeTests.cpp` - unit tests (tree, catalog, mesh winding, transforms, picking, import, maps, undo) + benchmark (`LevelMindedTests`)
 - Static lib `levelminded_core` = `src/scene/*` + `src/import/*` + `MeshGeometry`/`MeshLibrary` (no UI/GPU deps)
 - `src/editor/EditorCamera.*` - orbit/pan/dolly/fly camera math
 - `src/editor/Viewport.*` - camera input, click selection, gizmo toolbar + shortcuts, keyboard focus, orientation axes
@@ -138,6 +139,14 @@ simdjson's single-header amalgamation is downloaded with checksums (`lm_download
 - Loading replaces the scene: `SceneTree::Clear` (frees memory), `MeshLibrary::Reset` (renderer re-uploads
   on `Generation()` change), `AssetCatalog::ResetImported`, then `HierarchyPanel::Reset` / `AssetPanel::Reset`.
   Anything new that caches NodeIds or palette indices needs a reset there too.
+- Every user edit of the scene goes through `CommandHistory` (`Execute` a `Command`, or `Push` one whose
+  effect is already applied, like a finished gizmo drag). Never mutate `SceneTree` directly from UI code,
+  or undo/redo gets out of step with the scene. Direct mutation is fine for building scenes (mock level,
+  map loading, tests); loading must `Clear()` the history. Selection / expand / camera are not commands.
+- Commands hold `NodeId`s. Removing nodes for undo uses `SceneTree::Snapshot` + `Remove`, and putting
+  them back uses `Restore`, which reinstates the original ids at the original place; keep ids stable,
+  never re-create a node with a new id in an undo/redo path. The history is a fixed 100-step ring plus a
+  memory budget (`MemoryBytes()` per command); new commands that hold big data must report it.
 - After every modal OS dialog (file dialogs, message boxes) call `App::AfterModalDialog()`: key-ups that
   happen while it is open never reach ImGui, so shortcuts would get stuck otherwise.
 - Model files are opened through the loaders' file callbacks with `_wfopen_s` on UTF-8 paths (non-ASCII

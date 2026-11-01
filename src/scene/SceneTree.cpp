@@ -234,6 +234,83 @@ void SceneTree::Clear()
     StructureChanged();
 }
 
+SubtreeSnapshot SceneTree::Snapshot(NodeId nodeId) const
+{
+    SubtreeSnapshot snapshot;
+    const uint32_t first = IndexOf(nodeId);
+    if (first == kNoIndex)
+        return snapshot;
+    const uint32_t end = SubtreeEnd(first);
+    snapshot.nodes.reserve(end - first);
+    size_t chars = 0;
+    for (uint32_t i = first; i < end; ++i)
+        chars += m_names[i].length;
+    snapshot.names.reserve(chars);
+    for (uint32_t i = first; i < end; ++i) {
+        const Node& node = m_nodes[i];
+        const std::string_view name = NameAt(i);
+        SubtreeSnapshot::Entry entry{};
+        entry.id = node.id;
+        entry.subtreeSize = node.subtreeSize;
+        entry.nameOffset = static_cast<uint32_t>(snapshot.names.size());
+        entry.nameLength = static_cast<uint32_t>(name.size());
+        entry.kind = static_cast<uint8_t>(node.kind);
+        entry.flags = node.flags;
+        entry.item = m_items[i];
+        snapshot.nodes.push_back(entry);
+        snapshot.names.insert(snapshot.names.end(), name.begin(), name.end());
+    }
+    return snapshot;
+}
+
+bool SceneTree::Restore(const SubtreeSnapshot& snapshot, NodeId parentId, NodeId beforeId)
+{
+    if (snapshot.nodes.empty() || snapshot.nodes[0].subtreeSize != snapshot.nodes.size())
+        return false;
+    for (const SubtreeSnapshot::Entry& entry : snapshot.nodes)
+        if (entry.id >= m_indexOf.size() || m_indexOf[entry.id] != kNoIndex)
+            return false; // unknown id, or still / again in use
+
+    uint32_t parent = kNoIndex;
+    if (parentId != kInvalidNode) {
+        parent = IndexOf(parentId);
+        if (parent == kNoIndex || !m_nodes[parent].IsGroup())
+            return false;
+    }
+    uint32_t dest = parent == kNoIndex ? Size() : SubtreeEnd(parent);
+    if (beforeId != kInvalidNode) {
+        const uint32_t before = IndexOf(beforeId);
+        if (before == kNoIndex || m_nodes[before].parent != parent)
+            return false;
+        dest = before;
+    }
+
+    const auto count = static_cast<uint32_t>(snapshot.nodes.size());
+    std::vector<Node> nodes;
+    std::vector<NameRef> names;
+    std::vector<ItemData> items;
+    nodes.reserve(count);
+    names.reserve(count);
+    items.reserve(count);
+    for (const SubtreeSnapshot::Entry& entry : snapshot.nodes) {
+        // Parent, depth and the effective-visibility cache are recomputed below; selection is dropped.
+        const auto flags = static_cast<uint8_t>(entry.flags & ~(kSelected | kEffectivelyVisible));
+        nodes.push_back(Node{entry.id, kNoIndex, entry.subtreeSize, 0, static_cast<NodeKind>(entry.kind), flags});
+        names.push_back(StoreName(std::string_view(snapshot.names.data() + entry.nameOffset, entry.nameLength)));
+        items.push_back(entry.item);
+    }
+
+    for (uint32_t a = parent; a != kNoIndex; a = m_nodes[a].parent)
+        m_nodes[a].subtreeSize += count;
+    m_nodes.insert(m_nodes.begin() + dest, nodes.begin(), nodes.end());
+    m_names.insert(m_names.begin() + dest, names.begin(), names.end());
+    m_items.insert(m_items.begin() + dest, items.begin(), items.end());
+    RebuildLinks(); // parents, depths and the id -> index map for every node after `dest`
+    UpdateEffectiveVisibility(dest, dest + count);
+    StructureChanged();
+    return true;
+}
+
 void SceneTree::Reserve(uint32_t nodes, size_t nameChars)
 {
     m_nodes.reserve(nodes);

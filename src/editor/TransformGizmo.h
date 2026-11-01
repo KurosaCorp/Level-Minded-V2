@@ -1,12 +1,14 @@
 #pragma once
 
 #include "core/Rect.h"
+#include "scene/Commands.h"
 #include "scene/Picking.h"
 #include "scene/SceneTree.h"
 
 #include <DirectXMath.h>
 
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -54,7 +56,9 @@ public:
     void Update(SceneTree& scene, NodeId primary, const GizmoView& view, bool allowHover, bool snap);
     // Starts dragging the hovered handle. Returns false (and does nothing) if no handle is hovered.
     bool BeginDrag(const SceneTree& scene, const GizmoView& view);
-    void EndDrag() { m_active = Handle::None; }
+    // Finishes the drag. Returns the undo step for it (a TransformCommand with every target's
+    // before/after transform), or null if nothing actually changed.
+    std::unique_ptr<Command> EndDrag(const SceneTree& scene);
     void CancelDrag(SceneTree& scene); // puts every target back where the drag started
 
     void Draw(ImDrawList* drawList, const GizmoView& view) const;

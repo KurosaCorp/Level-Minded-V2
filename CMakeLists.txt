@@ -32,6 +32,8 @@ add_library(levelminded_core STATIC
     src/render/MeshGeometry.h
     src/render/MeshLibrary.cpp
     src/render/MeshLibrary.h
+    src/scene/Commands.cpp
+    src/scene/Commands.h
     src/scene/ItemCatalog.cpp
     src/scene/ItemCatalog.h
     src/scene/MapFile.cpp

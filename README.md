@@ -4,7 +4,7 @@
 
 ![LevelMinded overview](docs/overview.png)
 
-> **Status:** v1.0 is the first public release, focused on the core editor: viewport, hierarchy and asset palette. Click selection, move / rotate / scale tools, model importing (glTF and OBJ) and saving / loading maps are now on `main`. Mod support is next (see [Roadmap](#roadmap)).
+> **Status:** v1.0 is the first public release, focused on the core editor: viewport, hierarchy and asset palette. Click selection, move / rotate / scale tools, model importing (glTF and OBJ), saving / loading maps and undo / redo are now on `main`. Mod support is next (see [Roadmap](#roadmap)).
 
 ## Contents
 
@@ -14,6 +14,7 @@
 - [Center: 3D Viewport](#center-3d-viewport)
 - [Left Panel: Hierarchy](#left-panel-hierarchy)
 - [Right Panel: Assets](#right-panel-assets)
+- [Undo and Redo](#undo-and-redo)
 - [Saving and Loading Maps](#saving-and-loading-maps)
 - [Stats Overlay](#stats-overlay)
 - [Performance](#performance)
@@ -31,6 +32,7 @@
 - **Click to select, drag to transform:** click any item in the 3D view to select it, then move, rotate or scale it with an on-screen gizmo (W / E / R), with optional snapping.
 - **Group hierarchy:** nest items in groups, select a whole group with one click, hide and show entire groups, and reorganize everything with drag and drop.
 - **Asset palette:** click an item to place it straight into the group you are working in.
+- **Undo and redo:** every edit (placing, deleting, moving, rotating, scaling, hiding, renaming, regrouping) can be undone with **Ctrl + Z** and redone with **Ctrl + Y**.
 - **Save and load maps:** readable JSON map files that bring back every group, item, transform, visibility setting and imported model exactly as you left them.
 - **Bring your own models:** drag `.gltf`, `.glb` or `.obj` files onto the window (or use **File > Import Asset**) and they join the palette, at their real size and orientation.
 - **Built to scale:** stays smooth with 100,000+ items in a map.
@@ -139,6 +141,7 @@ The **transform gizmo** appears on the selection. When several items are selecte
 | **Ctrl** (while dragging) | Snap: 0.25 m steps, 15° steps, 0.1× steps |
 | **Esc** (while dragging) | Cancel the drag and put everything back |
 | **W / E / R** | Move / rotate / scale tool |
+| **Delete** | Delete the selected items (can be undone) |
 | **X**, or the **World / Local** button | Gizmo axes: world axes, or the selected item's own axes |
 
 The handle you hover turns yellow, and while dragging, the exact offset, angle or scale factor is shown next to the cursor. Scaling a single item always uses the item's own axes, so a rotated item stretches along its own length rather than skewing.
@@ -258,6 +261,20 @@ How models are placed:
 - **One mesh per file.** All parts of a model are merged into a single mesh, so it is placed, selected and transformed as one item.
 - **Importing the same file twice** just highlights the existing tile. A different file with the same name gets a numbered name (`Chair (2)`).
 
+## Undo and Redo
+
+Every change to the map can be undone, step by step:
+
+| Input | Action |
+|---|---|
+| **Ctrl + Z** (or **Edit > Undo**) | Undo the last change |
+| **Ctrl + Y** or **Ctrl + Shift + Z** (or **Edit > Redo**) | Redo it |
+
+- **What counts as a step:** placing an item from the palette, deleting (one item, or a whole selection with everything inside), each gizmo drag (move, rotate or scale, of one item or a whole selection), showing or hiding, renaming, creating a group, and each drag & drop in the Hierarchy. The **Edit** menu shows the name of the step that would be undone or redone.
+- **Exact:** undo puts things back exactly as they were. A deleted group comes back in the same place in the Hierarchy, with everything inside it, its names, transforms and visibility settings, and it is still the same object for the steps around it, so you can undo and redo freely across deletes.
+- **Selection, camera and expand / collapse** are not steps: undo doesn't change what you are looking at or what is selected.
+- **History size:** the last **100** steps are kept (older ones are forgotten, oldest first), and very large deletes are limited by a memory budget, so the history never grows without bound in long sessions. Making a new change after undoing discards the steps you could have redone. Loading a map starts a fresh history.
+
 ## Saving and Loading Maps
 
 Maps are saved as `.lmmap` files from the **File** menu:
@@ -343,14 +360,12 @@ v1.0 is the foundation release. Please be aware that:
 
 - New items are always placed at the origin; move them into place with the gizmo.
 - There is no box (drag-rectangle) selection in the viewport yet.
-- There is no undo/redo yet.
 - **Imported models:** textures, animations and skinning are not imported (models show their material base colors), and Draco-compressed glTF files are not supported. Maps refer to imported model files by path, so moving or deleting those files breaks the link (the items then show as boxes until the files are back).
 - Windows only.
 
 ## Roadmap
 
 - **Mod support:** extend LevelMinded with plug-ins and add-ons (see section 3 of the [License](#license)).
-- Undo/redo.
 - Textures for imported models.
 
 ## Building from Source

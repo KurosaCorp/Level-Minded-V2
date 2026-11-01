@@ -1,5 +1,6 @@
 #pragma once
 
+#include "scene/Commands.h"
 #include "scene/SceneTree.h"
 
 #include <vector>
@@ -23,7 +24,9 @@ class HierarchyPanel {
 public:
     static constexpr const char* kWindowName = "Hierarchy";
 
-    void Draw(SceneTree& tree, float dpiScale);
+    // Every edit made here (rename, show/hide, drag & drop, delete, new group) is executed through
+    // `history`, so it can be undone.
+    void Draw(SceneTree& tree, CommandHistory& history, float dpiScale);
 
     // Group that new content goes into: the active (last clicked) node if it is a group, otherwise
     // the active item's parent. kInvalidNode means the top level.
@@ -54,6 +57,7 @@ private:
     std::vector<PendingMove> m_pendingMoves;
     bool m_createGroupRequested = false;
     bool m_deleteRequested = false;
+    CommandHistory* m_history = nullptr; // valid during Draw
 
     NodeId m_activeNode = kInvalidNode; // last clicked node: anchor for "+ Group" and the Assets panel
     NodeId m_activeGroupThisFrame = kInvalidNode;

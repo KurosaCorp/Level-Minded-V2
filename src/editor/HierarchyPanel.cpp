@@ -61,8 +61,9 @@ void DrawKindIcon(ImDrawList* drawList, ImVec2 topLeft, float size, NodeKind kin
 
 } // namespace
 
-void HierarchyPanel::Draw(SceneTree& tree, float dpiScale)
+void HierarchyPanel::Draw(SceneTree& tree, CommandHistory& history, float dpiScale)
 {
+    m_history = &history;
     if (!ImGui::Begin(kWindowName)) {
         ImGui::End();
         return;
@@ -211,7 +212,7 @@ void HierarchyPanel::DrawRow(SceneTree& tree, uint32_t index, float dpiScale)
         const bool committed = ImGui::InputText("##rename", m_renameBuffer, sizeof(m_renameBuffer),
                                                 ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
         if ((committed || ImGui::IsItemDeactivatedAfterEdit()) && m_renameBuffer[0] != '\0')
-            tree.Rename(id, m_renameBuffer);
+            m_history->Execute(std::make_unique<RenameCommand>(id, m_renameBuffer), tree);
         if (committed || ImGui::IsItemDeactivated())
             m_renamingNode = kInvalidNode;
     } else {
@@ -237,7 +238,7 @@ void HierarchyPanel::DrawEyeButton(SceneTree& tree, const SceneTree::Node& node,
     const float size = ImGui::GetFrameHeight();
     const ImVec2 min = ImGui::GetCursorScreenPos();
     if (ImGui::InvisibleButton("##eye", ImVec2(size, size)))
-        tree.SetVisible(node.id, !node.Has(SceneTree::kVisible));
+        m_history->Execute(std::make_unique<VisibilityCommand>(node.id, !node.Has(SceneTree::kVisible)), tree);
 
     const bool ownVisible = node.Has(SceneTree::kVisible);
     const bool hiddenByParent = ownVisible && !node.Has(SceneTree::kEffectivelyVisible);
@@ -379,28 +380,25 @@ void HierarchyPanel::BeginRename(const SceneTree& tree, NodeId id)
 
 void HierarchyPanel::ApplyPendingEdits(SceneTree& tree)
 {
-    for (const PendingMove& move : m_pendingMoves) {
-        if (tree.Move(move.node, move.parent, move.before) && move.parent != kInvalidNode)
-            tree.SetExpanded(move.parent, true);
+    if (!m_pendingMoves.empty()) {
+        // One undo step for the whole drop.
+        std::vector<std::unique_ptr<Command>> moves;
+        for (const PendingMove& move : m_pendingMoves)
+            moves.push_back(std::make_unique<MoveCommand>(move.node, move.parent, move.before));
+        std::unique_ptr<Command> step = moves.size() == 1 ? std::move(moves[0]) : std::make_unique<MacroCommand>("Reparent", std::move(moves));
+        if (m_history->Execute(std::move(step), tree)) {
+            for (const PendingMove& move : m_pendingMoves)
+                if (move.parent != kInvalidNode)
+                    tree.SetExpanded(move.parent, true);
+        }
+        m_pendingMoves.clear();
     }
-    m_pendingMoves.clear();
 
     if (m_deleteRequested) {
         m_deleteRequested = false;
         // Top-most selected nodes (their subtrees go with them); fall back to the active node.
-        std::vector<NodeId> doomed;
-        for (uint32_t i = 0; i < tree.Size();) {
-            if (tree.NodeAt(i).Has(SceneTree::kSelected)) {
-                doomed.push_back(tree.NodeAt(i).id);
-                i = tree.SubtreeEnd(i);
-            } else {
-                ++i;
-            }
-        }
-        if (doomed.empty() && tree.Contains(m_activeNode))
-            doomed.push_back(m_activeNode);
-        for (NodeId id : doomed)
-            tree.Remove(id);
+        if (std::unique_ptr<DeleteCommand> step = MakeDeleteSelectionCommand(tree, m_activeNode))
+            m_history->Execute(std::move(step), tree);
         if (!tree.Contains(m_activeNode))
             m_activeNode = kInvalidNode;
     }
@@ -419,7 +417,10 @@ void HierarchyPanel::ApplyPendingEdits(SceneTree& tree)
         }
         char name[32];
         std::snprintf(name, sizeof(name), "Group %d", m_newGroupCounter++);
-        const NodeId group = tree.CreateGroup(name, parent);
+        const Command* step = m_history->Execute(std::make_unique<CreateGroupCommand>(name, parent), tree);
+        if (!step)
+            return;
+        const NodeId group = static_cast<const CreateGroupCommand*>(step)->Node();
         if (parent != kInvalidNode)
             tree.SetExpanded(parent, true);
         tree.ClearSelection();

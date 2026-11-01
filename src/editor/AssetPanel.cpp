@@ -162,7 +162,7 @@ void AssetPanel::Highlight(size_t index)
     m_scrollToHighlight = true;
 }
 
-NodeId AssetPanel::Draw(SceneTree& tree, const AssetCatalog& assets, NodeId targetGroup, float dpiScale)
+NodeId AssetPanel::Draw(SceneTree& tree, CommandHistory& history, const AssetCatalog& assets, NodeId targetGroup, float dpiScale)
 {
     const std::span<const CatalogItem> catalog = assets.Items();
     if (m_spawnCounts.size() < catalog.size())
@@ -219,7 +219,8 @@ NodeId AssetPanel::Draw(SceneTree& tree, const AssetCatalog& assets, NodeId targ
                 for (char& ch : name)
                     if (ch == ' ')
                         ch = '_';
-                spawned = SpawnCatalogItem(tree, item, targetGroup, name);
+                if (const Command* step = history.Execute(std::make_unique<SpawnCommand>(item, targetGroup, name), tree))
+                    spawned = static_cast<const SpawnCommand*>(step)->Node();
             }
             ImGui::PopID();
             column = (column + 1) % columns;

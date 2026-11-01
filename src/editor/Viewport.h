@@ -24,6 +24,7 @@ struct ViewportEvents {
 //   LMB click             select the item under the cursor (Ctrl: toggle, Shift: add; empty space clears)
 //   LMB drag on gizmo     move / rotate / scale the selection (Ctrl snaps, Esc cancels)
 //   W / E / R             move / rotate / scale gizmo      X   world / local axes
+//   Delete                delete the selection (undoable)
 //   Alt + LMB drag        orbit            MMB drag (or Alt + MMB)   pan
 //   Alt + RMB drag        dolly            Mouse wheel               dolly
 //   RMB drag              fly-look; WASD move, Q/E down/up, Shift fast, Ctrl slow, wheel = fly speed
@@ -33,6 +34,8 @@ class Viewport {
 public:
     // The meshes items refer to (used for click picking). Must be set before the first Update.
     void SetMeshLibrary(const MeshLibrary* meshes) { m_meshes = meshes; }
+    // Where finished gizmo drags and viewport deletes are recorded for undo. Must be set before Update.
+    void SetCommandHistory(CommandHistory* history) { m_history = history; }
 
     // Processes input for this frame. Call between ImGui::NewFrame() and ImGui::Render().
     // `activeNode` is the hierarchy's active node; the gizmo uses its axes in Local space.
@@ -85,6 +88,7 @@ private:
     float m_flySpeed = 8.0f; // world units per second
 
     const MeshLibrary* m_meshes = nullptr;
+    CommandHistory* m_history = nullptr;
     TransformGizmo m_gizmo;
     GizmoView m_gizmoView;   // this frame's camera + mouse, for drawing the gizmo
     double m_lastPickMs = 0.0;

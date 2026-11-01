@@ -106,8 +106,11 @@ ViewportEvents Viewport::Update(const Rect& rect, float dpiScale, SceneTree& sce
     // Gizmo and click selection, against the camera as it is drawn this frame.
     m_gizmoView = MakeGizmoView(dpiScale);
     m_gizmo.Update(scene, activeNode, m_gizmoView, hovered && m_drag == Drag::None, io.KeyCtrl);
-    if (m_gizmo.IsDragging() && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
-        m_gizmo.EndDrag();
+    if (m_gizmo.IsDragging() && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        std::unique_ptr<Command> step = m_gizmo.EndDrag(scene); // the whole drag is one undo step
+        if (step && m_history)
+            m_history->Push(std::move(step));
+    }
     if (m_drag == Drag::None && hovered && !io.KeyAlt && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
         !m_gizmo.IsDragging() && !m_gizmo.BeginDrag(scene, m_gizmoView))
         events.picked = PickAndSelect(scene, m_gizmoView.mouseRay, io.KeyCtrl, io.KeyShift);
@@ -235,6 +238,11 @@ void Viewport::HandleShortcuts(SceneTree& scene)
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false))
             m_gizmo.CancelDrag(scene);
         return;
+    }
+
+    if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && m_history) {
+        if (std::unique_ptr<DeleteCommand> step = MakeDeleteSelectionCommand(scene))
+            m_history->Execute(std::move(step), scene);
     }
 
     if (!io.KeyCtrl && !io.KeyAlt) {

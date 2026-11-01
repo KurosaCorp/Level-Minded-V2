@@ -67,6 +67,7 @@ bool App::Init(const AppOptions& options)
     if (!m_window.Create({L"LevelMinded", 1600, 900}, this))
         return false;
     m_viewport.SetMeshLibrary(&m_meshes);
+    m_viewport.SetCommandHistory(&m_history);
     if (!m_gpu.Create(m_window.Handle()) || !m_viewportRenderer.Create(m_gpu.Device(), &m_meshes))
         return false;
 
@@ -205,7 +206,7 @@ void App::RenderFrame()
     // Assets first: an item spawned here shows up in the Hierarchy and the viewport this same frame.
     {
         ProfileScope zone(Zone::AssetPanel);
-        const NodeId spawned = m_assets.Draw(m_scene, m_catalog, m_hierarchy.ActiveGroup(m_scene), dpiScale);
+        const NodeId spawned = m_assets.Draw(m_scene, m_history, m_catalog, m_hierarchy.ActiveGroup(m_scene), dpiScale);
         if (spawned != kInvalidNode) {
             m_scene.ClearSelection();
             m_scene.SetSelected(spawned, true);
@@ -215,7 +216,7 @@ void App::RenderFrame()
     }
     {
         ProfileScope zone(Zone::HierarchyPanel);
-        m_hierarchy.Draw(m_scene, dpiScale);
+        m_hierarchy.Draw(m_scene, m_history, dpiScale);
     }
     {
         ProfileScope zone(Zone::ViewportInput);
@@ -304,6 +305,20 @@ void App::DrawMainMenu()
                 exitRequested = true;
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("Edit")) {
+            // Labels name the step ("Undo Move"); built only while the menu is open.
+            char undoLabel[64], redoLabel[64];
+            std::snprintf(undoLabel, sizeof(undoLabel), "Undo %s", m_history.CanUndo() ? m_history.UndoName() : "");
+            std::snprintf(redoLabel, sizeof(redoLabel), "Redo %s", m_history.CanRedo() ? m_history.RedoName() : "");
+            const bool busy = m_viewport.Gizmo().IsDragging();
+            if (ImGui::MenuItem(undoLabel, "Ctrl+Z", false, m_history.CanUndo() && !busy))
+                UndoStep();
+            if (ImGui::MenuItem(redoLabel, "Ctrl+Y", false, m_history.CanRedo() && !busy))
+                RedoStep();
+            ImGui::Separator();
+            ImGui::TextDisabled("History: %zu of %zu steps", m_history.UndoCount(), m_history.MaxSteps());
+            ImGui::EndMenu();
+        }
         // Result of the last save / load, right-aligned.
         if (!m_fileStatus.empty()) {
             const float width = ImGui::CalcTextSize(m_fileStatus.c_str()).x + ImGui::GetStyle().ItemSpacing.x * 2.0f;
@@ -323,6 +338,14 @@ void App::DrawMainMenu()
             m_pendingFileAction = FileAction::Save;
         if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S))
             m_pendingFileAction = FileAction::SaveAs;
+        // Undo / redo (not while a gizmo drag is in progress: that drag isn't a step yet).
+        if (!m_viewport.Gizmo().IsDragging()) {
+            if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Z, ImGuiInputFlags_Repeat))
+                UndoStep();
+            if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Y, ImGuiInputFlags_Repeat) ||
+                ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, ImGuiInputFlags_Repeat))
+                RedoStep();
+        }
     }
     if (exitRequested && ConfirmDiscardChanges(L"quitting"))
         m_quitRequested = true;
@@ -371,6 +394,20 @@ void App::AfterModalDialog()
         ImGui::GetIO().ClearInputMouse();
     }
     MarkActive();
+}
+
+void App::UndoStep()
+{
+    const char* name = m_history.UndoName();
+    if (name && m_history.Undo(m_scene))
+        SetFileStatus(std::string("Undo: ") + name, false);
+}
+
+void App::RedoStep()
+{
+    const char* name = m_history.RedoName();
+    if (name && m_history.Redo(m_scene))
+        SetFileStatus(std::string("Redo: ") + name, false);
 }
 
 bool App::HasUnsavedChanges() const
@@ -517,6 +554,7 @@ bool App::LoadMapFrom(const std::filesystem::path& path)
 
     // Everything that held NodeIds or palette indices of the old map starts fresh.
     m_hierarchy.Reset();
+    m_history.Clear(); // its steps refer to the previous map's nodes
     m_assets.Reset();
     m_pendingImports.clear();
     if (report.hasCamera) {

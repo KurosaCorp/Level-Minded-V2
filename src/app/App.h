@@ -9,6 +9,7 @@
 #include "render/GpuDevice.h"
 #include "render/MeshLibrary.h"
 #include "render/ViewportRenderer.h"
+#include "scene/Commands.h"
 #include "scene/ItemCatalog.h"
 #include "scene/SceneTree.h"
 
@@ -84,6 +85,8 @@ private:
     void MarkSaved();
     void UpdateWindowTitle();
     void SetFileStatus(std::string text, bool isError);
+    void UndoStep();
+    void RedoStep();
     // Call after every modal OS dialog (file dialogs, message boxes): resets ImGui's key/mouse state.
     void AfterModalDialog();
     void MarkActive();
@@ -100,6 +103,7 @@ private:
     GpuDevice m_gpu;
     MeshLibrary m_meshes;   // built-in + imported meshes; outlives the renderer that mirrors it
     AssetCatalog m_catalog; // what the Assets panel offers
+    CommandHistory m_history; // undo / redo of every scene edit (last 100 steps)
     ViewportRenderer m_viewportRenderer;
     SceneTree m_scene;
     Viewport m_viewport;

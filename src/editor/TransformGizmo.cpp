@@ -497,6 +497,27 @@ void TransformGizmo::ApplyDrag(SceneTree& scene, const GizmoView& view, bool sna
     }
 }
 
+std::unique_ptr<Command> TransformGizmo::EndDrag(const SceneTree& scene)
+{
+    if (!IsDragging())
+        return nullptr;
+    m_active = Handle::None;
+    std::vector<NodeId> nodes;
+    std::vector<Transform> before, after;
+    for (size_t k = 0; k < m_targets.size() && k < m_startTransforms.size(); ++k) {
+        const uint32_t index = scene.IndexOf(m_targets[k]);
+        if (index == SceneTree::kNoIndex || scene.TransformAt(index) == m_startTransforms[k])
+            continue;
+        nodes.push_back(m_targets[k]);
+        before.push_back(m_startTransforms[k]);
+        after.push_back(scene.TransformAt(index));
+    }
+    if (nodes.empty())
+        return nullptr; // clicked a handle without moving it
+    const char* name = m_mode == GizmoMode::Translate ? "Move" : m_mode == GizmoMode::Rotate ? "Rotate" : "Scale";
+    return std::make_unique<TransformCommand>(name, std::move(nodes), std::move(before), std::move(after));
+}
+
 void TransformGizmo::CancelDrag(SceneTree& scene)
 {
     if (!IsDragging())

@@ -56,6 +56,24 @@ constexpr MeshId DefaultMesh(NodeKind kind)
 // Visibility: each node has its own toggle (kVisible). A node is effectively visible only if it and
 // all its ancestors are visible, so hiding a group hides its contents while each child keeps its own
 // setting for when the group is shown again.
+// A copy of one subtree, taken before it is removed, so it can be put back exactly (undo / redo).
+struct SubtreeSnapshot {
+    struct Entry {
+        uint32_t id;          // NodeId
+        uint32_t subtreeSize;
+        uint32_t nameOffset;  // in `names`
+        uint32_t nameLength;
+        uint8_t kind;         // NodeKind
+        uint8_t flags;        // SceneTree::Flag bits
+        ItemData item;
+    };
+    std::vector<Entry> nodes; // pre-order; nodes[0] is the root
+    std::vector<char> names;
+
+    bool Empty() const { return nodes.empty(); }
+    size_t MemoryBytes() const { return nodes.capacity() * sizeof(Entry) + names.capacity(); }
+};
+
 class SceneTree {
 public:
     static constexpr uint32_t kNoIndex = 0xFFFFFFFFu;
@@ -106,6 +124,14 @@ public:
     void Clear();
     // Pre-allocates for `nodes` nodes with `nameChars` name characters in total (bulk building).
     void Reserve(uint32_t nodes, size_t nameChars);
+
+    // Copies the subtree rooted at `node` (empty if it doesn't exist).
+    SubtreeSnapshot Snapshot(NodeId node) const;
+    // Puts a removed subtree back under `parent` (kInvalidNode = top level) before the sibling `before`
+    // (kInvalidNode = last), with its original NodeIds, names, transforms and visibility toggles.
+    // Selection is not restored. Fails (and changes nothing) if an id is in use again, or if
+    // `parent`/`before` are not valid there.
+    bool Restore(const SubtreeSnapshot& snapshot, NodeId parent, NodeId before);
 
     // ---- Visibility, selection, UI state (no index changes).
 

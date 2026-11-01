@@ -1,5 +1,6 @@
 #pragma once
 
+#include "scene/Commands.h"
 #include "scene/ItemCatalog.h"
 #include "scene/SceneTree.h"
 
@@ -17,8 +18,8 @@ class AssetPanel {
 public:
     static constexpr const char* kWindowName = "Assets";
 
-    // Returns the node spawned this frame, or kInvalidNode.
-    NodeId Draw(SceneTree& tree, const AssetCatalog& catalog, NodeId targetGroup, float dpiScale);
+    // Returns the node spawned this frame, or kInvalidNode. Spawning is an undoable SpawnCommand.
+    NodeId Draw(SceneTree& tree, CommandHistory& history, const AssetCatalog& catalog, NodeId targetGroup, float dpiScale);
 
     // Message shown under the search box (UTF-8); errors are drawn in red.
     void SetStatus(std::string text, bool isError);

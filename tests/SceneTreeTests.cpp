@@ -4,6 +4,7 @@
 #include "import/ModelImporter.h"
 #include "render/MeshGeometry.h"
 #include "render/MeshLibrary.h"
+#include "scene/Commands.h"
 #include "scene/ItemCatalog.h"
 #include "scene/MapFile.h"
 #include "scene/MockLevel.h"
@@ -1018,6 +1019,270 @@ void TestMapAssets()
     CHECK(resaved.find("\"path\": \"models/box.obj\"") != std::string::npos && resaved.find("\"asset\": 0") != std::string::npos);
 }
 
+// ---- Undo / redo
+
+// Everything a map saves, as text: an exact fingerprint of a scene's state.
+std::string SceneState(const SceneTree& scene)
+{
+    static const AssetCatalog catalog;
+    return WriteMapJson(scene, catalog, MapCamera{}, {});
+}
+
+std::vector<NodeId> NodeIds(const SceneTree& scene)
+{
+    std::vector<NodeId> ids;
+    for (uint32_t i = 0; i < scene.Size(); ++i)
+        ids.push_back(scene.NodeAt(i).id);
+    return ids;
+}
+
+NodeId FindByName(const SceneTree& scene, std::string_view name)
+{
+    for (uint32_t i = 0; i < scene.Size(); ++i)
+        if (scene.NameAt(i) == name)
+            return scene.NodeAt(i).id;
+    return kInvalidNode;
+}
+
+void TestSnapshotRestore()
+{
+    SceneTree scene;
+    BuildMockLevel(scene);
+    const NodeId architecture = FindByName(scene, "Architecture");
+    scene.SetVisible(FindByName(scene, "Upper Floor"), false);
+    Transform t = scene.TransformAt(scene.IndexOf(FindByName(scene, "Stairs")));
+    t.rotation = RotationZ(30.0f);
+    scene.SetTransform(FindByName(scene, "Stairs"), t);
+    const std::string before = SceneState(scene);
+    const std::vector<NodeId> idsBefore = NodeIds(scene);
+
+    // Remove a nested group, put it back at the same place: identical, same ids.
+    const uint32_t index = scene.IndexOf(architecture);
+    const NodeId parent = scene.NodeAt(scene.NodeAt(index).parent).id;
+    const NodeId before_ = scene.NodeAt(scene.NextSibling(index)).id;
+    const SubtreeSnapshot snapshot = scene.Snapshot(architecture);
+    CHECK(snapshot.nodes.size() == scene.NodeAt(index).subtreeSize && snapshot.MemoryBytes() > 0);
+    scene.Remove(architecture);
+    CHECK(!scene.Contains(architecture) && scene.Validate());
+    CHECK(scene.Restore(snapshot, parent, before_));
+    CHECK(scene.Validate() && SceneState(scene) == before && NodeIds(scene) == idsBefore);
+    // Hidden children stay hidden under a hidden parent; effective visibility is recomputed.
+    CHECK(!Visible(scene, FindByName(scene, "Floor_02")));
+
+    // Restoring over a live node, into an item, or before a node of another parent is refused.
+    CHECK(!scene.Restore(snapshot, parent, before_)); // ids are in use again
+    const SubtreeSnapshot stairs = scene.Snapshot(FindByName(scene, "Stairs"));
+    const NodeId stairsId = FindByName(scene, "Stairs");
+    scene.Remove(stairsId);
+    CHECK(!scene.Restore(stairs, FindByName(scene, "Floor_01"), kInvalidNode)); // items can't be parents
+    CHECK(!scene.Restore(stairs, FindByName(scene, "Lighting"), FindByName(scene, "Floor_01"))); // wrong sibling
+    CHECK(scene.Restore(stairs, kInvalidNode, kInvalidNode) && scene.Validate()); // top level works
+    CHECK(scene.NameAt(scene.Size() - 1) == "Stairs" && scene.Contains(stairsId));
+}
+
+void TestUndoRedo()
+{
+    SceneTree scene;
+    BuildMockLevel(scene);
+    CommandHistory history;
+    std::vector<std::string> states{SceneState(scene)};
+    const auto step = [&](std::unique_ptr<Command> command) {
+        const Command* recorded = history.Execute(std::move(command), scene);
+        CHECK(recorded != nullptr && scene.Validate());
+        states.push_back(SceneState(scene));
+        return recorded;
+    };
+
+    // Spawn, move it, hide a group, rename, reparent, new group, delete two subtrees at once.
+    const NodeId world = FindByName(scene, "World");
+    const CatalogItem& cubeItem = ItemCatalog()[0];
+    const NodeId cube = static_cast<const SpawnCommand*>(step(std::make_unique<SpawnCommand>(cubeItem, world, "Cube_01")))->Node();
+    CHECK(scene.Contains(cube) && scene.NodeAt(scene.NodeAt(scene.IndexOf(cube)).parent).id == world);
+    const Transform original = scene.TransformAt(scene.IndexOf(cube));
+    Transform moved = original;
+    moved.position = {3.25f, -1.5f, 2.0f};
+    moved.rotation = RotationZ(45.0f);
+    step(std::make_unique<TransformCommand>("Move", std::vector<NodeId>{cube}, std::vector<Transform>{original},
+                                            std::vector<Transform>{moved}));
+    step(std::make_unique<VisibilityCommand>(FindByName(scene, "Lighting"), false));
+    step(std::make_unique<RenameCommand>(cube, "Renamed cube"));
+    step(std::make_unique<MoveCommand>(cube, FindByName(scene, "Props"), FindByName(scene, "Crates")));
+    const NodeId group = static_cast<const CreateGroupCommand*>(step(std::make_unique<CreateGroupCommand>("Group 1", kInvalidNode)))->Node();
+    scene.SetSelected(FindByName(scene, "Architecture"), true);
+    scene.SetSelected(FindByName(scene, "Gameplay"), true);
+    const std::vector<NodeId> idsBeforeDelete = NodeIds(scene);
+    std::unique_ptr<DeleteCommand> deletion = MakeDeleteSelectionCommand(scene);
+    CHECK(deletion != nullptr && std::string(deletion->Name()) == "Delete 2 items");
+    step(std::move(deletion));
+    CHECK(!scene.Contains(FindByName(scene, "Floor_01")) && history.UndoCount() == 7);
+    CHECK(std::string(history.UndoName()) == "Delete 2 items");
+
+    // Undo everything: every intermediate state comes back exactly.
+    for (size_t i = states.size() - 1; i > 0; --i) {
+        CHECK(history.Undo(scene));
+        CHECK(scene.Validate() && SceneState(scene) == states[i - 1]);
+        if (i == states.size() - 1) // the delete: restored with the same ids, in the same order
+            CHECK(NodeIds(scene) == idsBeforeDelete && scene.SelectedItemCount() == 0);
+        if (i == 2) // the move undone: back to its exact original transform
+            CHECK(scene.TransformAt(scene.IndexOf(cube)) == original);
+    }
+    CHECK(!history.CanUndo() && !history.Undo(scene) && !scene.Contains(cube));
+
+    // Redo everything: same states again, and the spawned nodes come back with their old ids.
+    for (size_t i = 1; i < states.size(); ++i) {
+        CHECK(history.Redo(scene));
+        CHECK(scene.Validate() && SceneState(scene) == states[i]);
+    }
+    CHECK(!history.CanRedo() && scene.Contains(cube) && scene.Contains(group));
+    CHECK(scene.NameAt(scene.IndexOf(cube)) == "Renamed cube" && scene.TransformAt(scene.IndexOf(cube)) == moved);
+
+    // A new edit after undoing drops the redo steps.
+    history.Undo(scene);
+    history.Undo(scene);
+    CHECK(history.CanRedo());
+    step(std::make_unique<VisibilityCommand>(FindByName(scene, "Unsorted"), false));
+    CHECK(!history.CanRedo() && history.Size() == 6);
+
+    // Edits that change nothing are not recorded.
+    const size_t size = history.Size();
+    CHECK(history.Execute(std::make_unique<VisibilityCommand>(FindByName(scene, "Unsorted"), false), scene) == nullptr);
+    CHECK(history.Execute(std::make_unique<RenameCommand>(cube, "Renamed cube"), scene) == nullptr);
+    CHECK(history.Execute(std::make_unique<MoveCommand>(cube, kInvalidNode, cube), scene) == nullptr);
+    CHECK(history.Size() == size);
+
+    // A whole hierarchy drop as one step (MacroCommand).
+    const std::string beforeMacro = SceneState(scene);
+    std::vector<std::unique_ptr<Command>> moves;
+    const NodeId unsorted = FindByName(scene, "Unsorted");
+    const uint32_t unsortedSize = scene.NodeAt(scene.IndexOf(unsorted)).subtreeSize;
+    moves.push_back(std::make_unique<MoveCommand>(FindByName(scene, "Barrel_01"), unsorted, kInvalidNode));
+    moves.push_back(std::make_unique<MoveCommand>(FindByName(scene, "Barrel_02"), unsorted, kInvalidNode));
+    CHECK(history.Execute(std::make_unique<MacroCommand>("Reparent", std::move(moves)), scene) != nullptr);
+    CHECK(scene.NodeAt(scene.IndexOf(unsorted)).subtreeSize == unsortedSize + 2);
+    history.Undo(scene);
+    CHECK(SceneState(scene) == beforeMacro && scene.Validate());
+}
+
+void TestHistoryLimits()
+{
+    // Fixed number of steps: the oldest are forgotten.
+    SceneTree scene;
+    BuildMockLevel(scene);
+    const NodeId lighting = FindByName(scene, "Lighting");
+    CommandHistory history(100);
+    std::string after150;
+    for (int i = 0; i < 250; ++i) {
+        CHECK(history.Execute(std::make_unique<VisibilityCommand>(lighting, (i % 2) != 0), scene) != nullptr);
+        if (i == 149)
+            after150 = SceneState(scene);
+    }
+    CHECK(history.Size() == 100 && history.UndoCount() == 100 && history.MaxSteps() == 100);
+    int undone = 0;
+    while (history.Undo(scene))
+        ++undone;
+    CHECK(undone == 100 && SceneState(scene) == after150);
+    while (history.Redo(scene)) {
+    }
+    CHECK(history.UndoCount() == 100);
+
+    // Memory budget: big deletes push old steps out, the newest step always stays.
+    SceneTree big;
+    BuildStressLevel(big, 20000); // 200 blocks of 100 items
+    CommandHistory limited(100, 64 * 1024); // one 100-item block snapshot is ~10 KB
+    int deletes = 0;
+    for (uint32_t i = 1; i < big.Size() && deletes < 30;) {
+        const NodeId block = big.NodeAt(i).id;
+        if (!big.NodeAt(i).IsGroup()) {
+            ++i;
+            continue;
+        }
+        CHECK(limited.Execute(std::make_unique<DeleteCommand>(std::vector<NodeId>{block}), big) != nullptr);
+        CHECK(limited.MemoryBytes() <= 64u * 1024u || limited.Size() == 1);
+        ++deletes;
+    }
+    CHECK(limited.Size() < 30 && limited.Size() >= 2); // old steps were dropped to stay in budget
+    while (limited.Undo(big)) {
+    }
+    CHECK(big.Validate());
+}
+
+void TestUndoMemoryStability()
+{
+    // Hundreds of random edits with undo / redo mixed in: memory stays flat and every step stays
+    // reversible.
+    SceneTree scene;
+    BuildStressLevel(scene, 20000);
+    CommandHistory history;
+    uint32_t seed = 12345;
+    const auto random = [&](uint32_t n) {
+        seed = seed * 1664525u + 1013904223u;
+        return (seed >> 8) % n;
+    };
+    const auto anyNode = [&](bool groupsOnly) {
+        for (int tries = 0; tries < 64; ++tries) {
+            const uint32_t i = random(scene.Size());
+            if (!groupsOnly || scene.NodeAt(i).IsGroup())
+                return scene.NodeAt(i).id;
+        }
+        return scene.NodeAt(0).id;
+    };
+    const auto privateMb = [] {
+        PROCESS_MEMORY_COUNTERS_EX counters{};
+        ::GetProcessMemoryInfo(::GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters));
+        return double(counters.PrivateUsage) / (1024.0 * 1024.0);
+    };
+
+    double afterWarmup = 0.0;
+    for (int action = 0; action < 1200; ++action) {
+        if (action == 300)
+            afterWarmup = privateMb();
+        const uint32_t kind = random(10);
+        if (kind == 0) {
+            history.Undo(scene);
+        } else if (kind == 1) {
+            history.Redo(scene);
+        } else if (kind == 2) {
+            history.Execute(std::make_unique<SpawnCommand>(ItemCatalog()[random(5)], anyNode(true), "Spawned"), scene);
+        } else if (kind == 3) {
+            const NodeId node = anyNode(false);
+            if (scene.IndexOf(node) != 0) // keep the root group
+                history.Execute(std::make_unique<DeleteCommand>(std::vector<NodeId>{node}), scene);
+        } else if (kind == 4) {
+            history.Execute(std::make_unique<MoveCommand>(anyNode(false), anyNode(true), kInvalidNode), scene);
+        } else if (kind == 5) {
+            const NodeId node = anyNode(false);
+            history.Execute(std::make_unique<VisibilityCommand>(node, !scene.NodeAt(scene.IndexOf(node)).Has(SceneTree::kVisible)), scene);
+        } else {
+            const NodeId node = anyNode(false);
+            const uint32_t index = scene.IndexOf(node);
+            if (scene.NodeAt(index).IsGroup())
+                continue;
+            Transform t = scene.TransformAt(index);
+            Transform moved = t;
+            moved.position.x += 1.0f;
+            history.Execute(std::make_unique<TransformCommand>("Move", std::vector<NodeId>{node}, std::vector<Transform>{t},
+                                                               std::vector<Transform>{moved}),
+                            scene);
+        }
+        if (action % 100 == 0)
+            CHECK(scene.Validate());
+    }
+    const double afterAll = privateMb();
+    CHECK(history.Size() <= 100 && scene.Validate());
+
+    // Full undo of the remembered steps and redo again reproduces the same scene.
+    const std::string end = SceneState(scene);
+    while (history.Undo(scene)) {
+    }
+    CHECK(scene.Validate());
+    while (history.Redo(scene)) {
+    }
+    CHECK(SceneState(scene) == end && scene.Validate());
+    CHECK(afterAll - afterWarmup < 8.0);
+    std::printf("Undo stress: 1,200 random edits on 20,000 items, history %zu steps / %.2f MB, process %+.2f MB after warm-up\n",
+                history.Size(), double(history.MemoryBytes()) / (1024.0 * 1024.0), afterAll - afterWarmup);
+}
+
 template <typename F>
 double TimeMicroseconds(F&& work, int repeats = 20)
 {
@@ -1136,6 +1401,10 @@ int main()
     TestAssetCatalog();
     TestMapRoundTrip();
     TestMapAssets();
+    TestSnapshotRestore();
+    TestUndoRedo();
+    TestHistoryLimits();
+    TestUndoMemoryStability();
     Benchmark();
 
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
